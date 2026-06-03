@@ -172,6 +172,136 @@ body {
   color: #64748b;
 }
 
+.pos-toolbar {
+  width: 100%;
+  margin-bottom: 16px;
+}
+
+.store-select {
+  min-width: 220px;
+}
+
+.sku-search {
+  width: min(520px, 100%);
+}
+
+.pos-table {
+  margin-top: 4px;
+}
+
+.pos-section {
+  margin-top: 16px;
+}
+
+.member-search,
+.member-select,
+.settlement-panel {
+  width: 100%;
+}
+
+.payment-select {
+  width: 220px;
+  max-width: 100%;
+}
+
+.member-card {
+  margin-top: 14px;
+}
+
+.member-detail-card {
+  margin-top: 14px;
+  padding: 14px;
+  background: #f8fbff;
+  border: 1px solid #dbeafe;
+  border-radius: 6px;
+}
+
+.member-detail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #e5edf6;
+}
+
+.member-name {
+  color: #0f172a;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.member-level {
+  margin-top: 2px;
+  color: #1677ff;
+  font-size: 13px;
+}
+
+.member-info-grid {
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr);
+  gap: 8px 12px;
+  padding: 12px 0;
+  color: #64748b;
+}
+
+.member-info-grid strong {
+  color: #0f172a;
+  font-weight: 600;
+}
+
+.member-tag-section {
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr);
+  gap: 8px 12px;
+  padding-top: 8px;
+  color: #64748b;
+}
+
+.settlement-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #475569;
+  line-height: 24px;
+}
+
+.settlement-row strong {
+  color: #0f172a;
+  font-size: 16px;
+}
+
+.settlement-total {
+  padding-top: 8px;
+  border-top: 1px solid #e8eef6;
+}
+
+.settlement-total strong {
+  color: #1677ff;
+  font-size: 24px;
+}
+
+.discount-text {
+  color: #cf1322 !important;
+}
+
+.pos-action-buttons {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(96px, 1fr));
+  gap: 10px;
+}
+
+.pos-action-buttons .ant-btn {
+  width: 100%;
+  min-width: 0;
+}
+
+.hold-order-note {
+  color: #64748b;
+  font-size: 13px;
+}
+
 .danger-text {
   color: #cf1322;
   font-weight: 700;

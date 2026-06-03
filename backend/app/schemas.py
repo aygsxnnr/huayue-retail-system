@@ -70,6 +70,8 @@ class MemberOut(BaseModel):
     phone: str
     level: str
     tags: str
+    member_tags: list[str] = Field(default_factory=list)
+    available_coupons: list[str] = Field(default_factory=list)
     points: int
     total_spent: float
     joined_at: datetime
@@ -87,6 +89,22 @@ class InventoryOut(BaseModel):
     updated_at: datetime
     store: StoreOut | None = None
     sku: SKUOut | None = None
+
+
+class POSSkuOut(BaseModel):
+    sku_id: int
+    sku_code: str
+    barcode: str
+    product_name: str
+    category: str
+    color: str
+    size: str
+    list_price: float
+    cost_price: float
+    store_id: int
+    store_name: str
+    inventory_quantity: int
+    safety_stock: int
 
 
 class OrderItemCreate(BaseModel):

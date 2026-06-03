@@ -71,9 +71,9 @@ def seed() -> None:
         db.add_all(promotions)
 
         members = [
-            Member(member_no="HY20260001", name="王佳怡", phone="13800000001", level="金卡会员", tags="高复购,女装", points=1280, total_spent=3680),
-            Member(member_no="HY20260002", name="李明轩", phone="13800000002", level="普通会员", tags="男装,新品偏好", points=460, total_spent=980),
-            Member(member_no="HY20260003", name="赵雨晴", phone="13800000003", level="银卡会员", tags="促销敏感,鞋包", points=820, total_spent=2100),
+            Member(member_no="HY20260001", name="王佳怡", phone="13800000001", level="金卡会员", tags="活跃会员,新品敏感", points=1280, total_spent=3680),
+            Member(member_no="HY20260002", name="李明轩", phone="13800000002", level="普通会员", tags="基础款偏好,价格敏感", points=460, total_spent=980),
+            Member(member_no="HY20260003", name="赵雨晴", phone="13800000003", level="银卡会员", tags="价格敏感,活跃会员", points=820, total_spent=2100),
         ]
         db.add_all(members)
         db.flush()

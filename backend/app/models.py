@@ -82,6 +82,19 @@ class Member(Base):
 
     orders = relationship("SalesOrder", back_populates="member")
 
+    @property
+    def member_tags(self) -> list[str]:
+        return [tag.strip() for tag in self.tags.split(",") if tag.strip()]
+
+    @property
+    def available_coupons(self) -> list[str]:
+        coupons = ["满299减40券"]
+        if self.level in {"银卡会员", "金卡会员"}:
+            coupons.append("会员专享9折券")
+        if self.points >= 800:
+            coupons.append("积分兑换20元券")
+        return coupons
+
 
 class Inventory(Base):
     __tablename__ = "inventories"

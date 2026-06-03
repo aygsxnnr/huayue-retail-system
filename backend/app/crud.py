@@ -2,7 +2,7 @@ from datetime import datetime
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from . import models, schemas
@@ -20,12 +20,80 @@ def list_skus(db: Session) -> list[models.SKU]:
     return db.query(models.SKU).options(joinedload(models.SKU.product)).order_by(models.SKU.id).all()
 
 
+def search_pos_skus(db: Session, store_id: int, keyword: str = "") -> list[dict]:
+    store = db.get(models.Store, store_id)
+    if not store:
+        raise HTTPException(status_code=404, detail="门店不存在")
+
+    query = (
+        db.query(models.Inventory)
+        .join(models.SKU, models.Inventory.sku_id == models.SKU.id)
+        .join(models.Product, models.SKU.product_id == models.Product.id)
+        .options(
+            joinedload(models.Inventory.store),
+            joinedload(models.Inventory.sku).joinedload(models.SKU.product),
+        )
+        .filter(models.Inventory.store_id == store_id)
+    )
+    if keyword:
+        like_keyword = f"%{keyword.strip()}%"
+        query = query.filter(
+            or_(
+                models.Product.name.like(like_keyword),
+                models.Product.category.like(like_keyword),
+                models.SKU.sku_code.like(like_keyword),
+                models.SKU.barcode.like(like_keyword),
+                models.SKU.color.like(like_keyword),
+                models.SKU.size.like(like_keyword),
+            )
+        )
+
+    inventories = query.order_by(models.Product.category, models.SKU.sku_code).limit(30).all()
+    return [
+        {
+            "sku_id": item.sku_id,
+            "sku_code": item.sku.sku_code,
+            "barcode": item.sku.barcode,
+            "product_name": item.sku.product.name,
+            "category": item.sku.product.category,
+            "color": item.sku.color,
+            "size": item.sku.size,
+            "list_price": item.sku.list_price,
+            "cost_price": item.sku.cost_price,
+            "store_id": item.store_id,
+            "store_name": item.store.name,
+            "inventory_quantity": item.quantity,
+            "safety_stock": item.safety_stock,
+        }
+        for item in inventories
+    ]
+
+
 def list_promotions(db: Session) -> list[models.Promotion]:
     return db.query(models.Promotion).order_by(models.Promotion.id).all()
 
 
 def list_members(db: Session) -> list[models.Member]:
     return db.query(models.Member).order_by(models.Member.id).all()
+
+
+def search_members(db: Session, keyword: str) -> list[models.Member]:
+    if not keyword.strip():
+        return []
+    like_keyword = f"%{keyword.strip()}%"
+    return (
+        db.query(models.Member)
+        .filter(
+            or_(
+                models.Member.name.like(like_keyword),
+                models.Member.phone.like(like_keyword),
+                models.Member.member_no.like(like_keyword),
+            )
+        )
+        .order_by(models.Member.id)
+        .limit(10)
+        .all()
+    )
 
 
 def create_member(db: Session, payload: schemas.MemberCreate) -> models.Member:
@@ -71,11 +139,31 @@ def list_low_stock(db: Session) -> list[models.Inventory]:
     )
 
 
-def list_orders(db: Session) -> list[models.SalesOrder]:
+def list_orders(db: Session, limit: int | None = None) -> list[models.SalesOrder]:
+    query = (
+        db.query(models.SalesOrder)
+        .options(
+            joinedload(models.SalesOrder.items)
+            .joinedload(models.SalesOrderItem.sku)
+            .joinedload(models.SKU.product)
+        )
+        .order_by(models.SalesOrder.order_time.desc())
+    )
+    if limit:
+        query = query.limit(limit)
+    return query.all()
+
+
+def list_recent_orders(db: Session, limit: int = 8) -> list[models.SalesOrder]:
     return (
         db.query(models.SalesOrder)
-        .options(joinedload(models.SalesOrder.items).joinedload(models.SalesOrderItem.sku))
+        .options(
+            joinedload(models.SalesOrder.items)
+            .joinedload(models.SalesOrderItem.sku)
+            .joinedload(models.SKU.product)
+        )
         .order_by(models.SalesOrder.order_time.desc())
+        .limit(limit)
         .all()
     )
 
