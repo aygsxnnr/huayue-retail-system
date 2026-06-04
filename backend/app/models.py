@@ -109,6 +109,55 @@ class Inventory(Base):
 
     store = relationship("Store", back_populates="inventories")
     sku = relationship("SKU", back_populates="inventories")
+    replenishment_requests = relationship("ReplenishmentRequest", back_populates="inventory")
+    transfer_records = relationship("TransferRecord", back_populates="inventory")
+
+
+class ReplenishmentRequest(Base):
+    __tablename__ = "replenishment_requests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    inventory_id: Mapped[int] = mapped_column(ForeignKey("inventories.id"))
+    store_id: Mapped[int] = mapped_column(ForeignKey("stores.id"))
+    sku_id: Mapped[int] = mapped_column(ForeignKey("skus.id"))
+    current_quantity: Mapped[int] = mapped_column(Integer, default=0)
+    safety_stock: Mapped[int] = mapped_column(Integer, default=0)
+    in_transit: Mapped[int] = mapped_column(Integer, default=0)
+    recent_7d_sales: Mapped[int] = mapped_column(Integer, default=0)
+    suggested_qty: Mapped[int] = mapped_column(Integer, default=0)
+    request_qty: Mapped[int] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    applicant: Mapped[str] = mapped_column(String(50), default="门店店长")
+    status: Mapped[str] = mapped_column(String(20), default="待审核")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    inventory = relationship("Inventory", back_populates="replenishment_requests")
+    store = relationship("Store")
+    sku = relationship("SKU")
+    transfer_records = relationship("TransferRecord", back_populates="request")
+
+
+class TransferRecord(Base):
+    __tablename__ = "transfer_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    request_id: Mapped[int] = mapped_column(ForeignKey("replenishment_requests.id"))
+    inventory_id: Mapped[int] = mapped_column(ForeignKey("inventories.id"))
+    store_id: Mapped[int] = mapped_column(ForeignKey("stores.id"))
+    sku_id: Mapped[int] = mapped_column(ForeignKey("skus.id"))
+    source_location: Mapped[str] = mapped_column(String(100), default="华悦中央仓")
+    transfer_qty: Mapped[int] = mapped_column(Integer)
+    in_transit_qty: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(20), default="在途")
+    shipped_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    expected_arrival_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    arrived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    request = relationship("ReplenishmentRequest", back_populates="transfer_records")
+    inventory = relationship("Inventory", back_populates="transfer_records")
+    store = relationship("Store")
+    sku = relationship("SKU")
 
 
 class SalesOrder(Base):

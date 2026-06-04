@@ -89,6 +89,64 @@ class InventoryOut(BaseModel):
     updated_at: datetime
     store: StoreOut | None = None
     sku: SKUOut | None = None
+    recent_7d_sales: int = 0
+    suggested_qty: int = 0
+    inventory_status: str = "正常"
+
+
+class ReplenishmentCreate(BaseModel):
+    inventory_id: int
+    request_qty: int = Field(gt=0)
+    reason: str = ""
+    applicant: str = "门店店长"
+
+
+class ReplenishmentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    inventory_id: int
+    store_id: int
+    sku_id: int
+    current_quantity: int
+    safety_stock: int
+    in_transit: int
+    recent_7d_sales: int
+    suggested_qty: int
+    request_qty: int
+    reason: str
+    applicant: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    store: StoreOut | None = None
+    sku: SKUOut | None = None
+
+
+class TransferCreate(BaseModel):
+    request_id: int
+    transfer_qty: int | None = Field(default=None, gt=0)
+    source_location: str = "华悦中央仓"
+
+
+class TransferOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    request_id: int
+    inventory_id: int
+    store_id: int
+    sku_id: int
+    source_location: str
+    transfer_qty: int
+    in_transit_qty: int
+    status: str
+    shipped_at: datetime | None = None
+    expected_arrival_at: datetime | None = None
+    arrived_at: datetime | None = None
+    request: ReplenishmentOut | None = None
+    store: StoreOut | None = None
+    sku: SKUOut | None = None
 
 
 class POSSkuOut(BaseModel):

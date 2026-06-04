@@ -8,10 +8,12 @@ from .models import (
     PaymentRecord,
     Product,
     Promotion,
+    ReplenishmentRequest,
     SKU,
     SalesOrder,
     SalesOrderItem,
     Store,
+    TransferRecord,
 )
 
 
@@ -78,16 +80,20 @@ def seed() -> None:
         db.add_all(members)
         db.flush()
 
-        quantities = [18, 4, 12, 3, 9, 2]
-        for store in stores:
+        inventory_quantities = [
+            [18, 4, 12, 3, 9, 1],
+            [14, 2, 8, 0, 6, 1],
+            [9, 0, 6, 2, 11, 4],
+        ]
+        for store_index, store in enumerate(stores):
             for index, sku in enumerate(skus):
                 db.add(
                     Inventory(
                         store_id=store.id,
                         sku_id=sku.id,
-                        quantity=max(0, quantities[index] - (store.id - 1) * 2),
+                        quantity=inventory_quantities[store_index][index],
                         safety_stock=5,
-                        in_transit=8 if quantities[index] <= 4 else 0,
+                        in_transit=0,
                     )
                 )
         db.flush()
@@ -167,6 +173,87 @@ def seed() -> None:
                     promotion_loss=round(discount_amount, 2),
                     business_date=order.order_time.date(),
                     reconcile_status="已对账" if idx != 4 else "存在差异",
+                )
+            )
+
+        db.flush()
+
+        replenishment_targets = (
+            db.query(Inventory)
+            .filter(Inventory.quantity < Inventory.safety_stock)
+            .order_by(Inventory.quantity, Inventory.id)
+            .limit(8)
+            .all()
+        )
+        pending_targets = replenishment_targets[:5]
+        transfer_targets = replenishment_targets[5:8]
+
+        for index, inventory in enumerate(pending_targets, start=1):
+            recent_sales = 3 + index
+            suggested_qty = max(
+                inventory.safety_stock * 2 + recent_sales - inventory.quantity - inventory.in_transit,
+                0,
+            )
+            db.add(
+                ReplenishmentRequest(
+                    inventory_id=inventory.id,
+                    store_id=inventory.store_id,
+                    sku_id=inventory.sku_id,
+                    current_quantity=inventory.quantity,
+                    safety_stock=inventory.safety_stock,
+                    in_transit=inventory.in_transit,
+                    recent_7d_sales=recent_sales,
+                    suggested_qty=suggested_qty,
+                    request_qty=max(suggested_qty, 6),
+                    reason="畅销款低于安全库存，申请补货。",
+                    applicant="门店店长",
+                    status="待审核",
+                    created_at=datetime.utcnow() - timedelta(hours=index),
+                    updated_at=datetime.utcnow() - timedelta(hours=index),
+                )
+            )
+
+        db.flush()
+
+        for index, inventory in enumerate(transfer_targets, start=1):
+            recent_sales = 5 + index
+            suggested_qty = max(
+                inventory.safety_stock * 2 + recent_sales - inventory.quantity - inventory.in_transit,
+                0,
+            )
+            transfer_qty = max(suggested_qty, 8)
+            request = ReplenishmentRequest(
+                inventory_id=inventory.id,
+                store_id=inventory.store_id,
+                sku_id=inventory.sku_id,
+                current_quantity=inventory.quantity,
+                safety_stock=inventory.safety_stock,
+                in_transit=inventory.in_transit,
+                recent_7d_sales=recent_sales,
+                suggested_qty=suggested_qty,
+                request_qty=transfer_qty,
+                reason="库存预警已审核，进入调拨在途。",
+                applicant="区域督导",
+                status="在途",
+                created_at=datetime.utcnow() - timedelta(days=index),
+                updated_at=datetime.utcnow() - timedelta(hours=index),
+            )
+            db.add(request)
+            db.flush()
+            inventory.in_transit += transfer_qty
+            inventory.updated_at = datetime.utcnow()
+            db.add(
+                TransferRecord(
+                    request_id=request.id,
+                    inventory_id=inventory.id,
+                    store_id=inventory.store_id,
+                    sku_id=inventory.sku_id,
+                    source_location="华悦中央仓",
+                    transfer_qty=transfer_qty,
+                    in_transit_qty=transfer_qty,
+                    status="在途",
+                    shipped_at=datetime.utcnow() - timedelta(days=index),
+                    expected_arrival_at=datetime.utcnow() + timedelta(days=3 - index),
                 )
             )
 

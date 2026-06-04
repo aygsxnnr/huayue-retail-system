@@ -193,6 +193,26 @@ body {
   margin-top: 16px;
 }
 
+.inventory-section {
+  margin-top: 16px;
+}
+
+.inventory-toolbar {
+  width: 100%;
+}
+
+.inventory-filter {
+  min-width: 180px;
+}
+
+.inventory-descriptions {
+  margin-bottom: 16px;
+}
+
+.full-width-control {
+  width: 100%;
+}
+
 .member-search,
 .member-select,
 .settlement-panel {

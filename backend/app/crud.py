@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -115,7 +115,7 @@ def create_member(db: Session, payload: schemas.MemberCreate) -> models.Member:
 
 
 def list_inventory(db: Session) -> list[models.Inventory]:
-    return (
+    inventories = (
         db.query(models.Inventory)
         .options(
             joinedload(models.Inventory.store),
@@ -124,10 +124,11 @@ def list_inventory(db: Session) -> list[models.Inventory]:
         .order_by(models.Inventory.store_id, models.Inventory.sku_id)
         .all()
     )
+    return [_inventory_with_replenishment_metrics(db, item) for item in inventories]
 
 
 def list_low_stock(db: Session) -> list[models.Inventory]:
-    return (
+    inventories = (
         db.query(models.Inventory)
         .options(
             joinedload(models.Inventory.store),
@@ -137,6 +138,225 @@ def list_low_stock(db: Session) -> list[models.Inventory]:
         .order_by(models.Inventory.quantity)
         .all()
     )
+    return [_inventory_with_replenishment_metrics(db, item) for item in inventories]
+
+
+def _recent_7d_sales(db: Session, store_id: int, sku_id: int) -> int:
+    since = datetime.utcnow() - timedelta(days=7)
+    return (
+        db.query(func.coalesce(func.sum(models.SalesOrderItem.quantity), 0))
+        .join(models.SalesOrder, models.SalesOrderItem.order_id == models.SalesOrder.id)
+        .filter(
+            models.SalesOrder.store_id == store_id,
+            models.SalesOrderItem.sku_id == sku_id,
+            models.SalesOrder.order_time >= since,
+        )
+        .scalar()
+        or 0
+    )
+
+
+def _inventory_status(quantity: int, safety_stock: int, has_pending_replenishment: bool = False) -> str:
+    if has_pending_replenishment:
+        return "待补货"
+    if quantity <= 0:
+        return "缺货预警"
+    if quantity < safety_stock:
+        return "低库存"
+    return "正常"
+
+
+def _suggested_qty(safety_stock: int, recent_7d_sales: int, quantity: int, in_transit: int) -> int:
+    return max(safety_stock * 2 + recent_7d_sales - quantity - in_transit, 0)
+
+
+def _inventory_with_replenishment_metrics(db: Session, inventory: models.Inventory) -> dict:
+    recent_7d_sales = _recent_7d_sales(db, inventory.store_id, inventory.sku_id)
+    has_pending_replenishment = (
+        db.query(models.ReplenishmentRequest)
+        .filter(
+            models.ReplenishmentRequest.inventory_id == inventory.id,
+            models.ReplenishmentRequest.status.in_(["待审核", "已审核", "待调拨", "在途"]),
+        )
+        .first()
+        is not None
+    )
+    return {
+        "id": inventory.id,
+        "store_id": inventory.store_id,
+        "sku_id": inventory.sku_id,
+        "quantity": inventory.quantity,
+        "safety_stock": inventory.safety_stock,
+        "in_transit": inventory.in_transit,
+        "updated_at": inventory.updated_at,
+        "store": inventory.store,
+        "sku": inventory.sku,
+        "recent_7d_sales": recent_7d_sales,
+        "suggested_qty": _suggested_qty(
+            inventory.safety_stock,
+            recent_7d_sales,
+            inventory.quantity,
+            inventory.in_transit,
+        ),
+        "inventory_status": _inventory_status(
+            inventory.quantity,
+            inventory.safety_stock,
+            has_pending_replenishment,
+        ),
+    }
+
+
+def list_replenishments(db: Session) -> list[models.ReplenishmentRequest]:
+    return (
+        db.query(models.ReplenishmentRequest)
+        .options(
+            joinedload(models.ReplenishmentRequest.store),
+            joinedload(models.ReplenishmentRequest.sku).joinedload(models.SKU.product),
+        )
+        .order_by(models.ReplenishmentRequest.created_at.desc())
+        .all()
+    )
+
+
+def create_replenishment(
+    db: Session,
+    payload: schemas.ReplenishmentCreate,
+) -> models.ReplenishmentRequest:
+    inventory = (
+        db.query(models.Inventory)
+        .options(joinedload(models.Inventory.sku).joinedload(models.SKU.product))
+        .filter(models.Inventory.id == payload.inventory_id)
+        .first()
+    )
+    if not inventory:
+        raise HTTPException(status_code=404, detail="库存记录不存在")
+
+    recent_7d_sales = _recent_7d_sales(db, inventory.store_id, inventory.sku_id)
+    request = models.ReplenishmentRequest(
+        inventory_id=inventory.id,
+        store_id=inventory.store_id,
+        sku_id=inventory.sku_id,
+        current_quantity=inventory.quantity,
+        safety_stock=inventory.safety_stock,
+        in_transit=inventory.in_transit,
+        recent_7d_sales=recent_7d_sales,
+        suggested_qty=_suggested_qty(
+            inventory.safety_stock,
+            recent_7d_sales,
+            inventory.quantity,
+            inventory.in_transit,
+        ),
+        request_qty=payload.request_qty,
+        reason=payload.reason,
+        applicant=payload.applicant,
+        status="待审核",
+    )
+    db.add(request)
+    db.commit()
+    db.refresh(request)
+    return request
+
+
+def approve_replenishment(db: Session, request_id: int) -> models.ReplenishmentRequest:
+    request = db.get(models.ReplenishmentRequest, request_id)
+    if not request:
+        raise HTTPException(status_code=404, detail="补货申请不存在")
+    if request.status not in {"待审核", "已驳回"}:
+        raise HTTPException(status_code=400, detail="当前状态不能审核通过")
+    request.status = "已审核"
+    request.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(request)
+    return request
+
+
+def reject_replenishment(db: Session, request_id: int) -> models.ReplenishmentRequest:
+    request = db.get(models.ReplenishmentRequest, request_id)
+    if not request:
+        raise HTTPException(status_code=404, detail="补货申请不存在")
+    if request.status not in {"待审核", "已审核"}:
+        raise HTTPException(status_code=400, detail="当前状态不能驳回")
+    request.status = "已驳回"
+    request.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(request)
+    return request
+
+
+def list_transfers(db: Session) -> list[models.TransferRecord]:
+    return (
+        db.query(models.TransferRecord)
+        .options(
+            joinedload(models.TransferRecord.request),
+            joinedload(models.TransferRecord.store),
+            joinedload(models.TransferRecord.sku).joinedload(models.SKU.product),
+        )
+        .order_by(models.TransferRecord.shipped_at.desc(), models.TransferRecord.id.desc())
+        .all()
+    )
+
+
+def create_transfer(db: Session, payload: schemas.TransferCreate) -> models.TransferRecord:
+    request = db.get(models.ReplenishmentRequest, payload.request_id)
+    if not request:
+        raise HTTPException(status_code=404, detail="补货申请不存在")
+    if request.status != "已审核":
+        raise HTTPException(status_code=400, detail="只能对已审核补货申请生成调拨单")
+
+    inventory = db.get(models.Inventory, request.inventory_id)
+    if not inventory:
+        raise HTTPException(status_code=404, detail="库存记录不存在")
+
+    transfer_qty = payload.transfer_qty or request.request_qty
+    transfer = models.TransferRecord(
+        request_id=request.id,
+        inventory_id=request.inventory_id,
+        store_id=request.store_id,
+        sku_id=request.sku_id,
+        source_location=payload.source_location,
+        transfer_qty=transfer_qty,
+        in_transit_qty=transfer_qty,
+        status="在途",
+        shipped_at=datetime.utcnow(),
+        expected_arrival_at=datetime.utcnow() + timedelta(days=3),
+    )
+    request.status = "在途"
+    request.updated_at = datetime.utcnow()
+    inventory.in_transit += transfer_qty
+    inventory.updated_at = datetime.utcnow()
+
+    db.add(transfer)
+    db.commit()
+    db.refresh(transfer)
+    return transfer
+
+
+def mark_transfer_arrival(db: Session, transfer_id: int) -> models.TransferRecord:
+    transfer = db.get(models.TransferRecord, transfer_id)
+    if not transfer:
+        raise HTTPException(status_code=404, detail="调拨记录不存在")
+    if transfer.status == "已到货":
+        return transfer
+
+    inventory = db.get(models.Inventory, transfer.inventory_id)
+    if not inventory:
+        raise HTTPException(status_code=404, detail="库存记录不存在")
+    request = db.get(models.ReplenishmentRequest, transfer.request_id)
+
+    arrived_qty = transfer.in_transit_qty
+    inventory.quantity += arrived_qty
+    inventory.in_transit = max(inventory.in_transit - arrived_qty, 0)
+    inventory.updated_at = datetime.utcnow()
+    transfer.status = "已到货"
+    transfer.in_transit_qty = 0
+    transfer.arrived_at = datetime.utcnow()
+    if request:
+        request.status = "已完成"
+        request.updated_at = datetime.utcnow()
+
+    db.commit()
+    db.refresh(transfer)
+    return transfer
 
 
 def list_orders(db: Session, limit: int | None = None) -> list[models.SalesOrder]:
