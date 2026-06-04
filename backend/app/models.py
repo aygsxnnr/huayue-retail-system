@@ -4,6 +4,7 @@ from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
+from .utils.code_generator import parse_sku_code
 
 
 class Store(Base):
@@ -31,8 +32,20 @@ class Product(Base):
     season: Mapped[str] = mapped_column(String(20))
     brand: Mapped[str] = mapped_column(String(50), default="华悦")
     status: Mapped[str] = mapped_column(String(20), default="在售")
+    launch_date: Mapped[date] = mapped_column(Date, default=date.today)
+    lifecycle_status: Mapped[str] = mapped_column(String(20), default="新品")
 
     skus = relationship("SKU", back_populates="product")
+
+    @property
+    def list_price(self) -> float:
+        prices = [sku.list_price for sku in self.skus]
+        return min(prices) if prices else 0
+
+    @property
+    def cost_price(self) -> float:
+        prices = [sku.cost_price for sku in self.skus]
+        return min(prices) if prices else 0
 
 
 class SKU(Base):
@@ -46,10 +59,31 @@ class SKU(Base):
     list_price: Mapped[float] = mapped_column(Float)
     cost_price: Mapped[float] = mapped_column(Float)
     barcode: Mapped[str] = mapped_column(String(60), unique=True)
+    status: Mapped[str] = mapped_column(String(20), default="在售")
 
     product = relationship("Product", back_populates="skus")
     inventories = relationship("Inventory", back_populates="sku")
     order_items = relationship("SalesOrderItem", back_populates="sku")
+
+    @property
+    def product_code(self) -> str:
+        return parse_sku_code(self.sku_code).product_code
+
+    @property
+    def main_color_code(self) -> str:
+        return parse_sku_code(self.sku_code).main_color_code
+
+    @property
+    def sub_color_code(self) -> str:
+        return parse_sku_code(self.sku_code).sub_color_code
+
+    @property
+    def size_code(self) -> str:
+        return parse_sku_code(self.sku_code).size_code
+
+    @property
+    def is_standard_code(self) -> bool:
+        return parse_sku_code(self.sku_code).is_valid
 
 
 class Promotion(Base):
@@ -63,8 +97,33 @@ class Promotion(Base):
     end_date: Mapped[date] = mapped_column(Date)
     status: Mapped[str] = mapped_column(String(20), default="进行中")
     description: Mapped[str] = mapped_column(Text, default="")
+    applicable_scope: Mapped[str] = mapped_column(String(100), default="全部商品")
+    approval_status: Mapped[str] = mapped_column(String(20), default="已审批")
 
     orders = relationship("SalesOrder", back_populates="promotion")
+    coupons = relationship("Coupon", back_populates="promotion")
+
+
+class Coupon(Base):
+    __tablename__ = "coupons"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    code: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(100), index=True)
+    coupon_type: Mapped[str] = mapped_column(String(30))
+    promotion_id: Mapped[int | None] = mapped_column(ForeignKey("promotions.id"), nullable=True)
+    discount_amount: Mapped[float] = mapped_column(Float, default=0)
+    discount_rate: Mapped[float] = mapped_column(Float, default=1.0)
+    threshold_amount: Mapped[float] = mapped_column(Float, default=0)
+    valid_start: Mapped[date] = mapped_column(Date)
+    valid_end: Mapped[date] = mapped_column(Date)
+    target_group: Mapped[str] = mapped_column(String(100), default="全部会员")
+    issued_count: Mapped[int] = mapped_column(Integer, default=0)
+    used_count: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(20), default="可用")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    promotion = relationship("Promotion", back_populates="coupons")
 
 
 class Member(Base):

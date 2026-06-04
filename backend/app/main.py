@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .database import Base, engine
-from .routers import dashboard, finance, inventory, members, products, promotions, sales
+from .routers import coupons, dashboard, finance, inventory, members, products, promotions, sales
 
 Base.metadata.create_all(bind=engine)
 
@@ -22,6 +22,7 @@ app.add_middleware(
 
 app.include_router(products.router, prefix="/api")
 app.include_router(promotions.router, prefix="/api")
+app.include_router(coupons.router, prefix="/api")
 app.include_router(members.router, prefix="/api")
 app.include_router(inventory.router, prefix="/api")
 app.include_router(sales.router, prefix="/api")

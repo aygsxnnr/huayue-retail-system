@@ -4,6 +4,7 @@ import MainLayout from './layouts/MainLayout';
 import Dashboard from './pages/Dashboard';
 import InventoryReplenishment from './pages/InventoryReplenishment';
 import POSOrder from './pages/POSOrder';
+import ProductPromotion from './pages/ProductPromotion';
 
 function PlaceholderPage({ title }: { title: string }) {
   return (
@@ -22,7 +23,7 @@ export default function App() {
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard" element={<Dashboard />} />
           <Route path="pos" element={<POSOrder />} />
-          <Route path="products" element={<PlaceholderPage title="商品与促销" />} />
+          <Route path="products" element={<ProductPromotion />} />
           <Route path="inventory" element={<InventoryReplenishment />} />
           <Route path="members" element={<PlaceholderPage title="会员与营销" />} />
           <Route path="finance" element={<PlaceholderPage title="财务对账" />} />

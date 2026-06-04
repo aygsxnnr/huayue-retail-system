@@ -2,6 +2,7 @@ from datetime import date, datetime, timedelta
 
 from .database import Base, SessionLocal, engine
 from .models import (
+    Coupon,
     FinanceRecord,
     Inventory,
     Member,
@@ -15,6 +16,7 @@ from .models import (
     Store,
     TransferRecord,
 )
+from .utils.code_generator import build_sku_code, make_ean13, match_color, match_size
 
 
 def reset_database() -> None:
@@ -33,23 +35,66 @@ def seed() -> None:
         ]
         db.add_all(stores)
 
+        product_specs = [
+            ("TO10001", "法式短款针织开衫", "上衣", "春季", "新品", "在售", 20),
+            ("PA10001", "通勤直筒西装裤", "裤装", "四季", "成长期", "在售", 55),
+            ("TO10002", "轻盈雪纺衬衫", "上衣", "夏季", "新品", "在售", 12),
+            ("SK10001", "高腰A字半身裙", "半裙", "春季", "成熟期", "在售", 80),
+            ("CO10001", "羊毛混纺短外套", "外套", "秋冬", "清货期", "停售", 180),
+            ("CO10002", "都市轻薄夹克", "外套", "春季", "成长期", "在售", 45),
+            ("TO10003", "基础圆领T恤", "上衣", "夏季", "成熟期", "在售", 95),
+            ("PA10002", "弹力休闲长裤", "裤装", "四季", "成长期", "在售", 65),
+            ("TO10004", "简约连帽卫衣", "上衣", "秋季", "清货期", "下架", 220),
+            ("SH30008", "复古方头乐福鞋", "鞋类", "四季", "成熟期", "在售", 120),
+            ("AC03002", "轻便通勤托特包", "配饰", "四季", "新品", "在售", 18),
+            ("TO10005", "运动速干上衣", "上衣", "夏季", "成长期", "在售", 38),
+            ("PA10003", "束脚运动长裤", "裤装", "四季", "成熟期", "停售", 150),
+            ("AC03003", "极简银色项链", "配饰", "四季", "新品", "在售", 8),
+            ("AC03004", "复古针织围巾", "配饰", "秋冬", "下架", "下架", 260),
+        ]
         products = [
-            Product(code="P1001", name="法式短款针织开衫", category="女装", season="春季"),
-            Product(code="P1002", name="通勤直筒西装裤", category="女装", season="四季"),
-            Product(code="P2001", name="都市轻薄夹克", category="男装", season="春季"),
-            Product(code="P3001", name="复古方头乐福鞋", category="鞋包配饰", season="四季"),
+            Product(
+                code=code,
+                name=name,
+                category=category,
+                season=season,
+                lifecycle_status=lifecycle,
+                status=status,
+                launch_date=date.today() - timedelta(days=days_ago),
+            )
+            for code, name, category, season, lifecycle, status, days_ago in product_specs
         ]
         db.add_all(products)
         db.flush()
 
-        skus = [
-            SKU(sku_code="P1001-BE-S", product_id=products[0].id, color="米白", size="S", list_price=199, cost_price=82, barcode="690000100101"),
-            SKU(sku_code="P1001-BE-M", product_id=products[0].id, color="米白", size="M", list_price=199, cost_price=82, barcode="690000100102"),
-            SKU(sku_code="P1002-BK-M", product_id=products[1].id, color="黑色", size="M", list_price=259, cost_price=116, barcode="690000100201"),
-            SKU(sku_code="P1002-BK-L", product_id=products[1].id, color="黑色", size="L", list_price=259, cost_price=116, barcode="690000100202"),
-            SKU(sku_code="P2001-GY-L", product_id=products[2].id, color="灰色", size="L", list_price=329, cost_price=158, barcode="690000200101"),
-            SKU(sku_code="P3001-BR-38", product_id=products[3].id, color="棕色", size="38", list_price=299, cost_price=132, barcode="690000300101"),
-        ]
+        base_prices = [199, 259, 229, 189, 499, 329, 99, 239, 279, 299, 359, 169, 219, 129, 159]
+        colors = ["米白", "黑色", "雾霾蓝", "卡其", "灰色", "棕色", "浅粉", "墨绿", "多色拼接", "设计师定制色"]
+        sizes = ["S", "M", "L", "均码", "38", "40", "26", "30", "42", "XXXL"]
+        skus = []
+        barcode_serial = 1000
+        for index, product in enumerate(products):
+            for variant in range(2):
+                price = base_prices[index] + variant * 20
+                color = colors[(index + variant) % len(colors)]
+                size = sizes[(index + variant) % len(sizes)]
+                if product.code == "AC03002" and variant == 0:
+                    color = "蓝色"
+                    size = "38"
+                color_match = match_color(color)
+                size_match = match_size(product.category, size)
+                barcode_serial += 1
+                skus.append(
+                    SKU(
+                        sku_code=build_sku_code(product.code, color_match, size_match),
+                        product_id=product.id,
+                        color=color,
+                        size=size,
+                        list_price=price,
+                        cost_price=round(price * 0.45, 2),
+                        barcode=make_ean13(barcode_serial),
+                        status="在售" if product.status == "在售" else product.status,
+                    )
+                )
         db.add_all(skus)
 
         promotions = [
@@ -59,6 +104,9 @@ def seed() -> None:
                 discount_rate=0.9,
                 start_date=date.today() - timedelta(days=7),
                 end_date=date.today() + timedelta(days=14),
+                status="进行中",
+                applicable_scope="春季女装",
+                approval_status="已审批",
                 description="春季新品限时九折，用于演示促销匹配。",
             ),
             Promotion(
@@ -67,10 +115,59 @@ def seed() -> None:
                 discount_rate=0.95,
                 start_date=date.today() - timedelta(days=30),
                 end_date=date.today() + timedelta(days=30),
+                status="进行中",
+                applicable_scope="全场商品",
+                approval_status="已审批",
                 description="会员消费模拟优惠。",
+            ),
+            Promotion(
+                name="夏季清爽满减",
+                promotion_type="满减",
+                discount_rate=1.0,
+                start_date=date.today() + timedelta(days=3),
+                end_date=date.today() + timedelta(days=20),
+                status="未开始",
+                applicable_scope="夏季商品",
+                approval_status="已审批",
+                description="满399减60，适用于夏季上新商品。",
+            ),
+            Promotion(
+                name="旧款清仓7折",
+                promotion_type="折扣",
+                discount_rate=0.7,
+                start_date=date.today() - timedelta(days=45),
+                end_date=date.today() - timedelta(days=5),
+                status="已结束",
+                applicable_scope="清货期商品",
+                approval_status="已审批",
+                description="清货期商品阶段性折扣。",
+            ),
+            Promotion(
+                name="鞋包配饰组合购",
+                promotion_type="组合优惠",
+                discount_rate=0.85,
+                start_date=date.today() - timedelta(days=2),
+                end_date=date.today() + timedelta(days=5),
+                status="已停用",
+                applicable_scope="鞋包配饰",
+                approval_status="已审批",
+                description="鞋包配饰组合购活动，当前已停用。",
             ),
         ]
         db.add_all(promotions)
+        db.flush()
+
+        coupons = [
+            Coupon(code="CP20260001", name="满299减40券", coupon_type="满减券", promotion_id=promotions[0].id, discount_amount=40, threshold_amount=299, valid_start=date.today() - timedelta(days=7), valid_end=date.today() + timedelta(days=14), target_group="全部会员", issued_count=1200, used_count=386, status="可用"),
+            Coupon(code="CP20260002", name="会员专享9折券", coupon_type="折扣券", promotion_id=promotions[1].id, discount_rate=0.9, threshold_amount=0, valid_start=date.today() - timedelta(days=30), valid_end=date.today() + timedelta(days=30), target_group="银卡/金卡会员", issued_count=820, used_count=216, status="可用"),
+            Coupon(code="CP20260003", name="夏季满399减60券", coupon_type="满减券", promotion_id=promotions[2].id, discount_amount=60, threshold_amount=399, valid_start=date.today() + timedelta(days=3), valid_end=date.today() + timedelta(days=20), target_group="全部会员", issued_count=0, used_count=0, status="未开始"),
+            Coupon(code="CP20260004", name="清仓专享7折券", coupon_type="折扣券", promotion_id=promotions[3].id, discount_rate=0.7, threshold_amount=0, valid_start=date.today() - timedelta(days=45), valid_end=date.today() - timedelta(days=5), target_group="价格敏感会员", issued_count=600, used_count=188, status="已过期"),
+            Coupon(code="CP20260005", name="积分兑换20元券", coupon_type="积分券", promotion_id=None, discount_amount=20, threshold_amount=99, valid_start=date.today() - timedelta(days=10), valid_end=date.today() + timedelta(days=40), target_group="积分800以上会员", issued_count=300, used_count=74, status="可用"),
+            Coupon(code="CP20260006", name="生日会员满199减30", coupon_type="会员券", promotion_id=None, discount_amount=30, threshold_amount=199, valid_start=date.today() - timedelta(days=1), valid_end=date.today() + timedelta(days=29), target_group="生日月会员", issued_count=180, used_count=42, status="可用"),
+            Coupon(code="CP20260007", name="配饰组合85折券", coupon_type="折扣券", promotion_id=promotions[4].id, discount_rate=0.85, threshold_amount=0, valid_start=date.today() - timedelta(days=2), valid_end=date.today() + timedelta(days=5), target_group="配饰偏好会员", issued_count=260, used_count=19, status="已停用"),
+            Coupon(code="CP20260008", name="新客首单满199减50", coupon_type="会员券", promotion_id=None, discount_amount=50, threshold_amount=199, valid_start=date.today() - timedelta(days=3), valid_end=date.today() + timedelta(days=25), target_group="新注册会员", issued_count=500, used_count=96, status="可用"),
+        ]
+        db.add_all(coupons)
 
         members = [
             Member(member_no="HY20260001", name="王佳怡", phone="13800000001", level="金卡会员", tags="活跃会员,新品敏感", points=1280, total_spent=3680),
@@ -80,18 +177,14 @@ def seed() -> None:
         db.add_all(members)
         db.flush()
 
-        inventory_quantities = [
-            [18, 4, 12, 3, 9, 1],
-            [14, 2, 8, 0, 6, 1],
-            [9, 0, 6, 2, 11, 4],
-        ]
+        inventory_pattern = [18, 4, 0, 12, 3, 9, 1, 16, 5, 2, 11, 0, 7, 20, 4, 13, 6, 0, 8, 3, 17, 10, 2, 14, 5, 1, 19, 4, 12, 6]
         for store_index, store in enumerate(stores):
             for index, sku in enumerate(skus):
                 db.add(
                     Inventory(
                         store_id=store.id,
                         sku_id=sku.id,
-                        quantity=inventory_quantities[store_index][index],
+                        quantity=max(inventory_pattern[index % len(inventory_pattern)] - store_index, 0),
                         safety_stock=5,
                         in_transit=0,
                     )

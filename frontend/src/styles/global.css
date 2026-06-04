@@ -197,6 +197,19 @@ body {
   margin-top: 16px;
 }
 
+.product-section {
+  margin-top: 16px;
+}
+
+.product-toolbar {
+  width: 100%;
+  margin-bottom: 16px;
+}
+
+.product-search {
+  width: min(360px, 100%);
+}
+
 .inventory-toolbar {
   width: 100%;
 }
@@ -339,6 +352,30 @@ body {
 .ant-card-head-title {
   color: #0f172a;
   font-weight: 700;
+}
+
+.resizable-table-handle {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  bottom: 0;
+  z-index: 2;
+  width: 8px;
+  cursor: col-resize;
+  user-select: none;
+}
+
+.resizable-table-handle:hover,
+.resizable-table-handle.is-dragging {
+  background: rgba(22, 119, 255, 0.18);
+}
+
+.resizable-table .ant-table-container table,
+.resizable-table .ant-table-content > table,
+.resizable-table .ant-table-body > table {
+  width: var(--resizable-table-width) !important;
+  min-width: var(--resizable-table-width) !important;
+  table-layout: fixed !important;
 }
 
 @media (max-width: 768px) {

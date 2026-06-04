@@ -25,6 +25,36 @@ class ProductOut(BaseModel):
     season: str
     brand: str
     status: str
+    launch_date: date
+    lifecycle_status: str
+    list_price: float = 0
+    cost_price: float = 0
+
+
+class ProductCreate(BaseModel):
+    code: str | None = None
+    name: str
+    category: str
+    season: str
+    brand: str = "华悦"
+    status: str = "在售"
+    launch_date: date | None = None
+    lifecycle_status: str = "新品"
+
+
+class ProductUpdate(BaseModel):
+    code: str | None = None
+    name: str | None = None
+    category: str | None = None
+    season: str | None = None
+    brand: str | None = None
+    status: str | None = None
+    launch_date: date | None = None
+    lifecycle_status: str | None = None
+
+
+class StatusUpdate(BaseModel):
+    status: str
 
 
 class SKUOut(BaseModel):
@@ -38,7 +68,56 @@ class SKUOut(BaseModel):
     list_price: float
     cost_price: float
     barcode: str
+    status: str
     product: ProductOut | None = None
+    product_code: str = ""
+    main_color_code: str = ""
+    sub_color_code: str = ""
+    size_code: str = ""
+    is_standard_code: bool = False
+
+
+class SKUCodePreviewRequest(BaseModel):
+    product_id: int
+    color: str
+    size: str
+
+
+class SKUCodePreviewOut(BaseModel):
+    product_code: str
+    main_color_code: str
+    sub_color_code: str
+    size_code: str
+    sku_code: str
+    barcode: str
+    color_match_note: str
+    size_match_note: str
+    duplicate_sku: bool = False
+
+
+class SKUCreate(BaseModel):
+    product_id: int
+    sku_code: str | None = None
+    code: str | None = None
+    color: str
+    size: str
+    barcode: str | None = None
+    list_price: float | None = Field(default=None, gt=0)
+    sale_price: float | None = Field(default=None, gt=0)
+    price: float | None = Field(default=None, gt=0)
+    status: str = "启用"
+
+
+class SKUUpdate(BaseModel):
+    sku_code: str | None = None
+    code: str | None = None
+    color: str | None = None
+    size: str | None = None
+    barcode: str | None = None
+    list_price: float | None = Field(default=None, gt=0)
+    sale_price: float | None = Field(default=None, gt=0)
+    price: float | None = Field(default=None, gt=0)
+    status: str | None = None
 
 
 class PromotionOut(BaseModel):
@@ -52,6 +131,85 @@ class PromotionOut(BaseModel):
     end_date: date
     status: str
     description: str
+    applicable_scope: str
+    approval_status: str
+
+
+class PromotionCreate(BaseModel):
+    name: str
+    promotion_type: str
+    discount_rate: float = Field(default=1.0, ge=0, le=1)
+    start_date: date
+    end_date: date
+    status: str = "未开始"
+    description: str = ""
+    applicable_scope: str = "全部商品"
+    approval_status: str = "已审批"
+
+
+class PromotionUpdate(BaseModel):
+    name: str | None = None
+    promotion_type: str | None = None
+    discount_rate: float | None = Field(default=None, ge=0, le=1)
+    start_date: date | None = None
+    end_date: date | None = None
+    status: str | None = None
+    description: str | None = None
+    applicable_scope: str | None = None
+    approval_status: str | None = None
+
+
+class CouponOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    code: str
+    name: str
+    coupon_type: str
+    promotion_id: int | None
+    discount_amount: float
+    discount_rate: float
+    threshold_amount: float
+    valid_start: date
+    valid_end: date
+    target_group: str
+    issued_count: int
+    used_count: int
+    status: str
+    created_at: datetime
+    promotion: PromotionOut | None = None
+
+
+class CouponCreate(BaseModel):
+    code: str
+    name: str
+    coupon_type: str
+    promotion_id: int | None = None
+    discount_amount: float = Field(default=0, ge=0)
+    discount_rate: float = Field(default=1.0, ge=0, le=1)
+    threshold_amount: float = Field(default=0, ge=0)
+    valid_start: date
+    valid_end: date
+    target_group: str = "全部会员"
+    issued_count: int = Field(default=0, ge=0)
+    used_count: int = Field(default=0, ge=0)
+    status: str = "可用"
+
+
+class CouponUpdate(BaseModel):
+    code: str | None = None
+    name: str | None = None
+    coupon_type: str | None = None
+    promotion_id: int | None = None
+    discount_amount: float | None = Field(default=None, ge=0)
+    discount_rate: float | None = Field(default=None, ge=0, le=1)
+    threshold_amount: float | None = Field(default=None, ge=0)
+    valid_start: date | None = None
+    valid_end: date | None = None
+    target_group: str | None = None
+    issued_count: int | None = Field(default=None, ge=0)
+    used_count: int | None = Field(default=None, ge=0)
+    status: str | None = None
 
 
 class MemberCreate(BaseModel):

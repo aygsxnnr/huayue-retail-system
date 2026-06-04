@@ -1,11 +1,20 @@
 from datetime import datetime, timedelta
 from uuid import uuid4
+import re
 
 from fastapi import HTTPException
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from . import models, schemas
+from .utils.code_generator import (
+    build_sku_code,
+    is_valid_product_code,
+    match_color,
+    match_size,
+    next_barcode,
+    next_product_code,
+)
 
 
 def list_stores(db: Session) -> list[models.Store]:
@@ -13,11 +22,179 @@ def list_stores(db: Session) -> list[models.Store]:
 
 
 def list_products(db: Session) -> list[models.Product]:
-    return db.query(models.Product).order_by(models.Product.id).all()
+    return db.query(models.Product).options(joinedload(models.Product.skus)).order_by(models.Product.code.asc()).all()
+
+
+def standard_product_code(db: Session, product: models.Product) -> str:
+    if is_valid_product_code(product.code):
+        return product.code
+    return next_product_code(
+        product.category,
+        product.name,
+        [item[0] for item in db.query(models.Product.code).filter(models.Product.id != product.id).all()],
+    )
+
+
+def create_product(db: Session, payload: schemas.ProductCreate) -> models.Product:
+    product_code = payload.code or next_product_code(
+        payload.category,
+        payload.name,
+        [item[0] for item in db.query(models.Product.code).all()],
+    )
+    existing = db.query(models.Product).filter(models.Product.code == product_code).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="商品编码已存在")
+    product = models.Product(
+        code=product_code,
+        name=payload.name,
+        category=payload.category,
+        season=payload.season,
+        brand=payload.brand,
+        status=payload.status,
+        launch_date=payload.launch_date or datetime.utcnow().date(),
+        lifecycle_status=payload.lifecycle_status,
+    )
+    db.add(product)
+    db.commit()
+    db.refresh(product)
+    return product
+
+
+def update_product(db: Session, product_id: int, payload: schemas.ProductUpdate) -> models.Product:
+    product = db.get(models.Product, product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="商品不存在")
+    updates = payload.model_dump(exclude_unset=True)
+    if "code" in updates and updates["code"] != product.code:
+        existing = db.query(models.Product).filter(models.Product.code == updates["code"]).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="商品编码已存在")
+    for key, value in updates.items():
+        setattr(product, key, value)
+    db.commit()
+    db.refresh(product)
+    return product
+
+
+def update_product_status(db: Session, product_id: int, status: str) -> models.Product:
+    product = db.get(models.Product, product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="商品不存在")
+    product.status = status
+    db.commit()
+    db.refresh(product)
+    return product
 
 
 def list_skus(db: Session) -> list[models.SKU]:
-    return db.query(models.SKU).options(joinedload(models.SKU.product)).order_by(models.SKU.id).all()
+    return (
+        db.query(models.SKU)
+        .join(models.Product, models.SKU.product_id == models.Product.id)
+        .options(joinedload(models.SKU.product).joinedload(models.Product.skus))
+        .order_by(models.Product.code.asc(), models.SKU.sku_code.asc())
+        .all()
+    )
+
+
+def generate_sku_code_preview(db: Session, payload: schemas.SKUCodePreviewRequest) -> schemas.SKUCodePreviewOut:
+    product = db.get(models.Product, payload.product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="商品不存在")
+    color_match = match_color(payload.color)
+    size_match = match_size(product.category, payload.size)
+    product_code = standard_product_code(db, product)
+    sku_code = build_sku_code(product_code, color_match, size_match)
+    barcode = next_barcode([item[0] for item in db.query(models.SKU.barcode).all()])
+    duplicate_sku = db.query(models.SKU).filter(models.SKU.sku_code == sku_code).first() is not None
+    return schemas.SKUCodePreviewOut(
+        product_code=product_code,
+        main_color_code=color_match.main_color_code,
+        sub_color_code=color_match.sub_color_code,
+        size_code=size_match.size_code,
+        sku_code=sku_code,
+        barcode=barcode,
+        color_match_note=color_match.note,
+        size_match_note=size_match.note,
+        duplicate_sku=duplicate_sku,
+    )
+
+
+def create_sku(db: Session, payload: schemas.SKUCreate) -> models.SKU:
+    product = db.get(models.Product, payload.product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="商品不存在")
+    color_match = match_color(payload.color)
+    size_match = match_size(product.category, payload.size)
+    product_code = standard_product_code(db, product)
+    if product.code != product_code:
+        product.code = product_code
+    sku_code = build_sku_code(product_code, color_match, size_match)
+    existing_code = db.query(models.SKU).filter(models.SKU.sku_code == sku_code).first()
+    if existing_code:
+        raise HTTPException(status_code=400, detail="该颜色尺码组合已存在")
+    barcode = next_barcode([item[0] for item in db.query(models.SKU.barcode).all()])
+    existing_barcode = db.query(models.SKU).filter(models.SKU.barcode == barcode).first()
+    if existing_barcode:
+        raise HTTPException(status_code=400, detail="条码已存在")
+    list_price = payload.list_price or payload.sale_price or payload.price
+    if not list_price:
+        raise HTTPException(status_code=400, detail="销售价不能为空")
+    sku = models.SKU(
+        sku_code=sku_code,
+        product_id=payload.product_id,
+        color=payload.color,
+        size=payload.size,
+        barcode=barcode,
+        list_price=list_price,
+        cost_price=round(list_price * 0.55, 2),
+        status=payload.status,
+    )
+    db.add(sku)
+    db.commit()
+    db.refresh(sku)
+    return sku
+
+
+def update_sku(db: Session, sku_id: int, payload: schemas.SKUUpdate) -> models.SKU:
+    sku = db.get(models.SKU, sku_id)
+    if not sku:
+        raise HTTPException(status_code=404, detail="SKU不存在")
+    updates = payload.model_dump(exclude_unset=True)
+    updates.pop("sku_code", None)
+    updates.pop("code", None)
+    list_price = updates.pop("sale_price", None) or updates.pop("price", None)
+    if list_price is not None and "list_price" not in updates:
+        updates["list_price"] = list_price
+    updates.pop("barcode", None)
+    for key, value in updates.items():
+        setattr(sku, key, value)
+    color_match = match_color(sku.color)
+    size_match = match_size(sku.product.category if sku.product else "", sku.size)
+    product_code = standard_product_code(db, sku.product) if sku.product else ""
+    if sku.product and sku.product.code != product_code:
+        sku.product.code = product_code
+    target_sku_code = build_sku_code(product_code, color_match, size_match) if sku.product else sku.sku_code
+    if target_sku_code != sku.sku_code:
+        existing = db.query(models.SKU).filter(models.SKU.sku_code == target_sku_code, models.SKU.id != sku.id).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="该颜色尺码组合已存在")
+        sku.sku_code = target_sku_code
+        sku.barcode = next_barcode([item[0] for item in db.query(models.SKU.barcode).filter(models.SKU.id != sku.id).all()])
+    elif not re.fullmatch(r"69\d{11}", sku.barcode or ""):
+        sku.barcode = next_barcode([item[0] for item in db.query(models.SKU.barcode).filter(models.SKU.id != sku.id).all()])
+    db.commit()
+    db.refresh(sku)
+    return sku
+
+
+def update_sku_status(db: Session, sku_id: int, status: str) -> models.SKU:
+    sku = db.get(models.SKU, sku_id)
+    if not sku:
+        raise HTTPException(status_code=404, detail="SKU不存在")
+    sku.status = status
+    db.commit()
+    db.refresh(sku)
+    return sku
 
 
 def search_pos_skus(db: Session, store_id: int, keyword: str = "") -> list[dict]:
@@ -71,6 +248,81 @@ def search_pos_skus(db: Session, store_id: int, keyword: str = "") -> list[dict]
 
 def list_promotions(db: Session) -> list[models.Promotion]:
     return db.query(models.Promotion).order_by(models.Promotion.id).all()
+
+
+def create_promotion(db: Session, payload: schemas.PromotionCreate) -> models.Promotion:
+    promotion = models.Promotion(**payload.model_dump())
+    db.add(promotion)
+    db.commit()
+    db.refresh(promotion)
+    return promotion
+
+
+def update_promotion(db: Session, promotion_id: int, payload: schemas.PromotionUpdate) -> models.Promotion:
+    promotion = db.get(models.Promotion, promotion_id)
+    if not promotion:
+        raise HTTPException(status_code=404, detail="促销活动不存在")
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(promotion, key, value)
+    db.commit()
+    db.refresh(promotion)
+    return promotion
+
+
+def update_promotion_status(db: Session, promotion_id: int, status: str) -> models.Promotion:
+    promotion = db.get(models.Promotion, promotion_id)
+    if not promotion:
+        raise HTTPException(status_code=404, detail="促销活动不存在")
+    promotion.status = status
+    db.commit()
+    db.refresh(promotion)
+    return promotion
+
+
+def list_coupons(db: Session) -> list[models.Coupon]:
+    return (
+        db.query(models.Coupon)
+        .options(joinedload(models.Coupon.promotion))
+        .order_by(models.Coupon.id)
+        .all()
+    )
+
+
+def create_coupon(db: Session, payload: schemas.CouponCreate) -> models.Coupon:
+    existing = db.query(models.Coupon).filter(models.Coupon.code == payload.code).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="优惠券编号已存在")
+    coupon = models.Coupon(**payload.model_dump())
+    db.add(coupon)
+    db.commit()
+    db.refresh(coupon)
+    return coupon
+
+
+def update_coupon(db: Session, coupon_id: int, payload: schemas.CouponUpdate) -> models.Coupon:
+    coupon = db.get(models.Coupon, coupon_id)
+    if not coupon:
+        raise HTTPException(status_code=404, detail="优惠券不存在")
+    updates = payload.model_dump(exclude_unset=True)
+    if "code" in updates and updates["code"] != coupon.code:
+        existing = db.query(models.Coupon).filter(models.Coupon.code == updates["code"]).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="优惠券编号已存在")
+    for key, value in updates.items():
+        setattr(coupon, key, value)
+    db.commit()
+    db.refresh(coupon)
+    return coupon
+
+
+def update_coupon_status(db: Session, coupon_id: int, status: str) -> models.Coupon:
+    coupon = db.get(models.Coupon, coupon_id)
+    if not coupon:
+        raise HTTPException(status_code=404, detail="优惠券不存在")
+    coupon.status = status
+    db.commit()
+    db.refresh(coupon)
+    return coupon
 
 
 def list_members(db: Session) -> list[models.Member]:
