@@ -21,6 +21,43 @@ def list_stores(db: Session) -> list[models.Store]:
     return db.query(models.Store).order_by(models.Store.id).all()
 
 
+def create_store(db: Session, payload: schemas.StoreCreate) -> models.Store:
+    existing = db.query(models.Store).filter(models.Store.code == payload.code).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="门店编码已存在")
+    store = models.Store(**payload.model_dump())
+    db.add(store)
+    db.commit()
+    db.refresh(store)
+    return store
+
+
+def update_store(db: Session, store_id: int, payload: schemas.StoreUpdate) -> models.Store:
+    store = db.get(models.Store, store_id)
+    if not store:
+        raise HTTPException(status_code=404, detail="门店不存在")
+    updates = payload.model_dump(exclude_unset=True)
+    if "code" in updates and updates["code"] != store.code:
+        existing = db.query(models.Store).filter(models.Store.code == updates["code"]).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="门店编码已存在")
+    for key, value in updates.items():
+        setattr(store, key, value)
+    db.commit()
+    db.refresh(store)
+    return store
+
+
+def update_store_status(db: Session, store_id: int, status: str) -> models.Store:
+    store = db.get(models.Store, store_id)
+    if not store:
+        raise HTTPException(status_code=404, detail="门店不存在")
+    store.status = status
+    db.commit()
+    db.refresh(store)
+    return store
+
+
 def list_products(db: Session) -> list[models.Product]:
     return db.query(models.Product).options(joinedload(models.Product.skus)).order_by(models.Product.code.asc()).all()
 
@@ -150,8 +187,11 @@ def create_sku(db: Session, payload: schemas.SKUCreate) -> models.SKU:
         status=payload.status,
     )
     db.add(sku)
+    db.flush()
+    created_inventory_count = _create_default_inventory_for_sku(db, sku)
     db.commit()
     db.refresh(sku)
+    sku.created_inventory_count = created_inventory_count
     return sku
 
 
@@ -197,6 +237,37 @@ def update_sku_status(db: Session, sku_id: int, status: str) -> models.SKU:
     return sku
 
 
+def _is_available_store_for_inventory(store: models.Store) -> bool:
+    return (store.status or "") in {"正常", "正常营业", "营业中"}
+
+
+def _create_default_inventory_for_sku(db: Session, sku: models.SKU) -> int:
+    stores = db.query(models.Store).order_by(models.Store.id).all()
+    created_count = 0
+    for store in stores:
+        if not _is_available_store_for_inventory(store):
+            continue
+        existing = (
+            db.query(models.Inventory)
+            .filter(models.Inventory.store_id == store.id, models.Inventory.sku_id == sku.id)
+            .first()
+        )
+        if existing:
+            continue
+        db.add(
+            models.Inventory(
+                store_id=store.id,
+                sku_id=sku.id,
+                quantity=0,
+                safety_stock=5,
+                in_transit=0,
+                updated_at=datetime.utcnow(),
+            )
+        )
+        created_count += 1
+    return created_count
+
+
 def search_pos_skus(db: Session, store_id: int, keyword: str = "") -> list[dict]:
     store = db.get(models.Store, store_id)
     if not store:
@@ -211,6 +282,7 @@ def search_pos_skus(db: Session, store_id: int, keyword: str = "") -> list[dict]
             joinedload(models.Inventory.sku).joinedload(models.SKU.product),
         )
         .filter(models.Inventory.store_id == store_id)
+        .filter(~models.SKU.status.in_(["停用", "下架"]))
     )
     if keyword:
         like_keyword = f"%{keyword.strip()}%"
@@ -503,6 +575,53 @@ def create_marketing_touch(db: Session, payload: schemas.MarketingTouchCreate) -
     return touch
 
 
+def batch_create_marketing_touches(db: Session, payload: schemas.MarketingTouchBatchCreate) -> dict:
+    created_count = 0
+    skipped_count = 0
+    member_ids = list(dict.fromkeys(payload.member_ids))
+    coupon_ids = list(dict.fromkeys(payload.coupon_ids))
+    channels = [channel for channel in dict.fromkeys(payload.channels) if channel]
+    for member_id in member_ids:
+        member = db.get(models.Member, member_id)
+        if not member:
+            skipped_count += len(coupon_ids) * len(channels)
+            continue
+        for coupon_id in coupon_ids:
+            coupon = db.get(models.Coupon, coupon_id)
+            if not coupon:
+                skipped_count += len(channels)
+                continue
+            for channel in channels:
+                existing = (
+                    db.query(models.MarketingTouch)
+                    .filter(
+                        models.MarketingTouch.member_id == member_id,
+                        models.MarketingTouch.coupon_id == coupon_id,
+                        models.MarketingTouch.channel == channel,
+                        models.MarketingTouch.writeoff_status == "未核销",
+                    )
+                    .first()
+                )
+                if existing:
+                    skipped_count += 1
+                    continue
+                db.add(
+                    models.MarketingTouch(
+                        member_id=member_id,
+                        coupon_id=coupon_id,
+                        promotion_id=coupon.promotion_id,
+                        channel=channel,
+                        participation_status="未参与",
+                        writeoff_status="未核销",
+                        remark=payload.remark,
+                    )
+                )
+                coupon.issued_count += 1
+                created_count += 1
+    db.commit()
+    return {"created_count": created_count, "skipped_count": skipped_count}
+
+
 def repurchase_analysis(db: Session) -> dict:
     _sync_member_metrics(db)
     members = (
@@ -763,6 +882,29 @@ def list_low_stock(db: Session) -> list[models.Inventory]:
         .all()
     )
     return [_inventory_with_replenishment_metrics(db, item) for item in inventories]
+
+
+def update_inventory_safety_stock(
+    db: Session,
+    inventory_id: int,
+    payload: schemas.InventorySafetyStockUpdate,
+) -> dict:
+    inventory = (
+        db.query(models.Inventory)
+        .options(
+            joinedload(models.Inventory.store),
+            joinedload(models.Inventory.sku).joinedload(models.SKU.product),
+        )
+        .filter(models.Inventory.id == inventory_id)
+        .first()
+    )
+    if not inventory:
+        raise HTTPException(status_code=404, detail="库存记录不存在")
+    inventory.safety_stock = payload.safety_stock
+    inventory.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(inventory)
+    return _inventory_with_replenishment_metrics(db, inventory)
 
 
 def _recent_7d_sales(db: Session, store_id: int, sku_id: int) -> int:
@@ -1118,20 +1260,459 @@ def create_order(db: Session, payload: schemas.OrderCreate) -> models.SalesOrder
     )
 
 
-def list_finance_records(db: Session) -> list[models.FinanceRecord]:
-    return db.query(models.FinanceRecord).order_by(models.FinanceRecord.business_date.desc()).all()
+def list_finance_records(db: Session) -> list[dict]:
+    records = _finance_record_query(db).all()
+    return sorted(
+        [_finance_record_view(record) for record in records],
+        key=_finance_record_sort_key,
+    )
+
+
+def resolve_finance_record(db: Session, record_id: int) -> dict:
+    record = (
+        _finance_record_query(db)
+        .filter(models.FinanceRecord.id == record_id)
+        .first()
+    )
+    if not record:
+        raise HTTPException(status_code=404, detail="财务记录不存在")
+    can_resolve, reason = _can_resolve_finance_record(record)
+    if not can_resolve:
+        raise HTTPException(status_code=400, detail=reason)
+    record.reconcile_status = "已处理"
+    db.commit()
+    db.refresh(record)
+    return _finance_record_view(record)
+
+
+def reconcile_finance_record(db: Session, record_id: int) -> dict:
+    record = (
+        _finance_record_query(db)
+        .filter(models.FinanceRecord.id == record_id)
+        .first()
+    )
+    if not record:
+        raise HTTPException(status_code=404, detail="财务记录不存在")
+    can_reconcile, reason = _can_reconcile_finance_record(record)
+    if not can_reconcile:
+        raise HTTPException(status_code=400, detail=reason)
+    _apply_reconciliation(record)
+    db.commit()
+    db.refresh(record)
+    return _finance_record_view(record)
+
+
+def batch_reconcile_finance_records(db: Session, record_ids: list[int]) -> dict:
+    success_count = 0
+    failed_items = []
+    for record_id in record_ids:
+        record = (
+            _finance_record_query(db)
+            .filter(models.FinanceRecord.id == record_id)
+            .first()
+        )
+        if not record:
+            failed_items.append({"id": record_id, "reason": "财务记录不存在"})
+            continue
+        can_reconcile, reason = _can_reconcile_finance_record(record)
+        if not can_reconcile:
+            failed_items.append({"id": record_id, "reason": reason})
+            continue
+        _apply_reconciliation(record)
+        success_count += 1
+    db.commit()
+    return {
+        "success_count": success_count,
+        "failed_count": len(failed_items),
+        "failed_items": failed_items,
+    }
+
+
+def batch_resolve_finance_records(db: Session, record_ids: list[int]) -> dict:
+    success_count = 0
+    failed_items = []
+    for record_id in record_ids:
+        record = (
+            _finance_record_query(db)
+            .filter(models.FinanceRecord.id == record_id)
+            .first()
+        )
+        if not record:
+            failed_items.append({"id": record_id, "reason": "财务记录不存在"})
+            continue
+        can_resolve, reason = _can_resolve_finance_record(record)
+        if not can_resolve:
+            failed_items.append({"id": record_id, "reason": reason})
+            continue
+        record.reconcile_status = "已处理"
+        success_count += 1
+    db.commit()
+    return {
+        "success_count": success_count,
+        "failed_count": len(failed_items),
+        "failed_items": failed_items,
+    }
+
+
+def list_payment_records(db: Session) -> list[dict]:
+    payments = (
+        db.query(models.PaymentRecord)
+        .options(
+            joinedload(models.PaymentRecord.order).joinedload(models.SalesOrder.store),
+        )
+        .all()
+    )
+    return sorted(
+        [_payment_view(payment) for payment in payments],
+        key=_payment_record_sort_key,
+    )
 
 
 def finance_summary(db: Session) -> dict:
-    row = db.query(
-        func.coalesce(func.sum(models.FinanceRecord.sales_amount), 0),
-        func.coalesce(func.sum(models.FinanceRecord.cost_amount), 0),
-        func.coalesce(func.sum(models.FinanceRecord.gross_profit), 0),
-        func.coalesce(func.sum(models.FinanceRecord.promotion_loss), 0),
-    ).one()
+    today = datetime.utcnow().date()
+    records = _finance_record_query(db).all()
+    today_records = [record for record in records if record.business_date == today]
+    gross_profit = sum(record.gross_profit for record in records)
+    sales_amount = sum(record.sales_amount for record in records)
     return {
-        "销售额": round(row[0], 2),
-        "成本": round(row[1], 2),
-        "毛利": round(row[2], 2),
-        "促销让利": round(row[3], 2),
+        "today_order_amount": _round(sum(_order_amount(record) for record in today_records)),
+        "today_payment_amount": _round(sum(_payment_amount(record) for record in today_records)),
+        "today_difference_amount": _round(sum(_difference_amount(record) for record in today_records)),
+        "pending_difference_count": sum(1 for record in records if _can_resolve_finance_record(record)[0]),
+        "settled_count": sum(1 for record in records if record.reconcile_status in {"已对账", "已处理", "已平账"}),
+        "gross_profit": _round(gross_profit),
+        "gross_profit_rate": _rate(gross_profit, sales_amount),
+        "promotion_discount_amount": _round(sum(record.promotion_loss for record in records)),
     }
+
+
+def finance_profit_trend(db: Session) -> dict:
+    records = _finance_record_query(db).all()
+    today = datetime.utcnow().date()
+    trend = []
+    for offset in range(6, -1, -1):
+        day = today - timedelta(days=offset)
+        day_records = [record for record in records if record.business_date == day]
+        trend.append(
+            {
+                "date": day.strftime("%m-%d"),
+                "order_amount": _round(sum(_order_amount(record) for record in day_records)),
+                "payment_amount": _round(sum(_payment_amount(record) for record in day_records)),
+                "difference_amount": _round(sum(_difference_amount(record) for record in day_records)),
+                "sales_amount": _round(sum(record.sales_amount for record in day_records)),
+                "cost_amount": _round(sum(record.cost_amount for record in day_records)),
+                "gross_profit": _round(sum(record.gross_profit for record in day_records)),
+            }
+        )
+    product_rows, category_rows = _profit_breakdown(db)
+    return {
+        "trend": trend,
+        "product_profit_rank": product_rows,
+        "category_profit": category_rows,
+    }
+
+
+def finance_promotion_loss(db: Session) -> list[dict]:
+    promotions = db.query(models.Promotion).order_by(models.Promotion.id).all()
+    rows = []
+    for promotion in promotions:
+        orders = (
+            db.query(models.SalesOrder)
+            .options(joinedload(models.SalesOrder.items).joinedload(models.SalesOrderItem.sku))
+            .filter(models.SalesOrder.promotion_id == promotion.id)
+            .all()
+        )
+        original_amount = sum(order.total_amount for order in orders)
+        discount_amount = sum(order.discount_amount for order in orders)
+        paid_amount = sum(order.paid_amount for order in orders)
+        cost_amount = sum(_order_cost(order) for order in orders)
+        gross_profit = paid_amount - cost_amount
+        rows.append(
+            {
+                "promotion_id": promotion.id,
+                "promotion_code": f"PR{promotion.id:05d}",
+                "promotion_name": promotion.name,
+                "promotion_type": promotion.promotion_type,
+                "order_count": len(orders),
+                "original_amount": _round(original_amount),
+                "discount_amount": _round(discount_amount),
+                "paid_amount": _round(paid_amount),
+                "cost_amount": _round(cost_amount),
+                "gross_profit": _round(gross_profit),
+                "gross_profit_rate": _rate(gross_profit, paid_amount),
+                "status": promotion.status,
+            }
+        )
+    return rows
+
+
+def finance_store_settlement(db: Session) -> list[dict]:
+    stores = db.query(models.Store).order_by(models.Store.id).all()
+    rows = []
+    for store in stores:
+        records = _finance_record_query(db).filter(models.FinanceRecord.store_id == store.id).all()
+        sales_amount = sum(record.sales_amount for record in records)
+        cost_amount = sum(record.cost_amount for record in records)
+        gross_profit = sum(record.gross_profit for record in records)
+        order_count = len({record.order_id for record in records})
+        difference_amount = sum(_difference_amount(record) for record in records)
+        status = "良好"
+        if difference_amount > 300:
+            status = "异常"
+        elif difference_amount > 100:
+            status = "需关注"
+        elif order_count == 0:
+            status = "正常"
+        rows.append(
+            {
+                "store_id": store.id,
+                "store_name": store.name,
+                "sales_amount": _round(sales_amount),
+                "order_count": order_count,
+                "average_order_value": _round(sales_amount / order_count if order_count else 0),
+                "cost_amount": _round(cost_amount),
+                "gross_profit": _round(gross_profit),
+                "gross_profit_rate": _rate(gross_profit, sales_amount),
+                "promotion_discount_amount": _round(sum(record.promotion_loss for record in records)),
+                "difference_amount": _round(difference_amount),
+                "settlement_status": status,
+            }
+        )
+    return rows
+
+
+def _finance_record_query(db: Session):
+    return db.query(models.FinanceRecord).options(
+        joinedload(models.FinanceRecord.order).joinedload(models.SalesOrder.payment),
+        joinedload(models.FinanceRecord.order).joinedload(models.SalesOrder.store),
+        joinedload(models.FinanceRecord.store),
+    )
+
+
+def _finance_record_view(record: models.FinanceRecord) -> dict:
+    order = record.order
+    payment = order.payment if order else None
+    store = record.store or (order.store if order else None)
+    return {
+        "id": record.id,
+        "record_no": record.record_no,
+        "order_no": order.order_no if order else "-",
+        "store_name": store.name if store else "-",
+        "cashier_name": "门店收银员",
+        "order_amount": _round(_order_amount(record)),
+        "payment_amount": _round(_payment_amount(record)),
+        "discount_amount": _round(order.discount_amount if order else record.promotion_loss),
+        "difference_amount": _round(_difference_amount(record)),
+        "payment_method": payment.method if payment else (order.payment_method if order else "-"),
+        "status": record.reconcile_status,
+        "reconciliation_time": record.business_date,
+    }
+
+
+def _payment_view(payment: models.PaymentRecord) -> dict:
+    order = payment.order
+    store = order.store if order else None
+    finance_record = order.finance_record if order else None
+    return {
+        "id": payment.id,
+        "payment_no": payment.payment_no,
+        "order_no": order.order_no if order else "-",
+        "store_name": store.name if store else "-",
+        "payment_method": payment.method,
+        "payable_amount": _round(order.paid_amount if order else payment.amount),
+        "paid_amount": _round(payment.amount),
+        "payment_status": payment.status,
+        "payment_time": payment.paid_at,
+        "third_party_no": f"TP{payment.payment_no}",
+        "cashier_name": "门店收银员",
+        "finance_record_no": finance_record.record_no if finance_record else "-",
+        "difference_amount": _round(_difference_amount(finance_record)) if finance_record else 0,
+        "remark": "支付流水与财务记录存在差异" if finance_record and _difference_amount(finance_record) else "支付流水正常",
+    }
+
+
+def _order_amount(record: models.FinanceRecord) -> float:
+    return float(record.order.paid_amount if record.order else record.sales_amount)
+
+
+def _payment_amount(record: models.FinanceRecord) -> float:
+    payment = record.order.payment if record.order else None
+    return float(payment.amount if payment else record.sales_amount)
+
+
+def _difference_amount(record: models.FinanceRecord) -> float:
+    if not record:
+        return 0
+    return abs(_order_amount(record) - _payment_amount(record))
+
+
+def _can_resolve_finance_record(record: models.FinanceRecord) -> tuple[bool, str]:
+    status = record.reconcile_status
+    difference_amount = _difference_amount(record)
+    if status in {"已处理"}:
+        return False, "已处理记录不能重复处理"
+    if status in {"已关闭"}:
+        return False, "已关闭记录不能操作"
+    if status in {"已对账", "已平账"}:
+        return False, "已平账记录无需处理"
+    if status == "待对账":
+        return False, "该记录尚未执行对账，请先点击‘执行对账’。"
+    if status in {"存在差异", "待处理"}:
+        return True, ""
+    if difference_amount != 0:
+        return True, ""
+    return False, "无差异金额，无需处理"
+
+
+def _can_reconcile_finance_record(record: models.FinanceRecord) -> tuple[bool, str]:
+    if record.reconcile_status != "待对账":
+        if record.reconcile_status in {"已对账", "已平账"}:
+            return False, "该记录已平账，无需重复对账"
+        if record.reconcile_status == "已处理":
+            return False, "已处理记录不能重复对账"
+        if record.reconcile_status == "已关闭":
+            return False, "已关闭记录不能操作"
+        return False, "只有待对账记录可以执行对账"
+    if not record.order or not record.order.payment:
+        return False, "缺少支付流水，暂无法完成对账。"
+    return True, ""
+
+
+def _apply_reconciliation(record: models.FinanceRecord) -> None:
+    difference_amount = _difference_amount(record)
+    record.reconcile_status = "已平账" if difference_amount == 0 else "存在差异"
+
+
+def _finance_status_priority(status: str) -> int:
+    priority = {
+        "存在差异": 1,
+        "待处理": 2,
+        "待对账": 3,
+        "已处理": 4,
+        "已对账": 5,
+        "已平账": 5,
+        "已关闭": 6,
+    }
+    return priority.get(status, 7)
+
+
+def _finance_record_sort_key(record: dict) -> tuple:
+    return (
+        _finance_status_priority(record.get("status", "")),
+        -_timestamp(record.get("reconciliation_time")),
+        -_number_suffix(record.get("record_no", "")),
+        -int(record.get("id", 0)),
+    )
+
+
+def _payment_status_priority(status: str) -> int:
+    priority = {
+        "失败": 1,
+        "待确认": 2,
+        "已退款": 3,
+        "成功": 4,
+    }
+    return priority.get(status, 5)
+
+
+def _payment_record_sort_key(payment: dict) -> tuple:
+    return (
+        _payment_status_priority(payment.get("payment_status", "")),
+        -_timestamp(payment.get("payment_time")),
+        -_number_suffix(payment.get("payment_no", "")),
+        -int(payment.get("id", 0)),
+    )
+
+
+def _timestamp(value) -> float:
+    if not value:
+        return 0
+    if isinstance(value, datetime):
+        return value.timestamp()
+    if hasattr(value, "isoformat"):
+        return datetime.fromisoformat(value.isoformat()).timestamp()
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0
+
+
+def _number_suffix(value: str) -> int:
+    digits = "".join(char for char in str(value) if char.isdigit())
+    return int(digits or 0)
+
+
+def _order_cost(order: models.SalesOrder) -> float:
+    return sum((item.sku.cost_price if item.sku else 0) * item.quantity for item in order.items)
+
+
+def _profit_breakdown(db: Session) -> tuple[list[dict], list[dict]]:
+    items = (
+        db.query(models.SalesOrderItem)
+        .options(
+            joinedload(models.SalesOrderItem.order),
+            joinedload(models.SalesOrderItem.sku).joinedload(models.SKU.product),
+        )
+        .all()
+    )
+    product_map: dict[str, dict] = {}
+    category_map: dict[str, dict] = {}
+    for item in items:
+        sku = item.sku
+        product = sku.product if sku else None
+        product_name = product.name if product else "未知商品"
+        sku_code = sku.sku_code if sku else "-"
+        category = product.category if product else "未分类"
+        sales_amount = float(item.subtotal)
+        cost_amount = float((sku.cost_price if sku else 0) * item.quantity)
+        product_key = f"{product_name}-{sku_code}"
+        product_row = product_map.setdefault(
+            product_key,
+            {
+                "product_name": product_name,
+                "sku_code": sku_code,
+                "sales_quantity": 0,
+                "sales_amount": 0.0,
+                "cost_amount": 0.0,
+            },
+        )
+        product_row["sales_quantity"] += item.quantity
+        product_row["sales_amount"] += sales_amount
+        product_row["cost_amount"] += cost_amount
+        category_row = category_map.setdefault(category, {"category": category, "sales_amount": 0.0, "cost_amount": 0.0})
+        category_row["sales_amount"] += sales_amount
+        category_row["cost_amount"] += cost_amount
+    product_rows = []
+    for index, row in enumerate(sorted(product_map.values(), key=lambda item: item["sales_amount"], reverse=True), start=1):
+        gross_profit = row["sales_amount"] - row["cost_amount"]
+        product_rows.append(
+            {
+                "rank": index,
+                **row,
+                "sales_amount": _round(row["sales_amount"]),
+                "cost_amount": _round(row["cost_amount"]),
+                "gross_profit": _round(gross_profit),
+                "gross_profit_rate": _rate(gross_profit, row["sales_amount"]),
+            }
+        )
+    category_rows = []
+    for row in sorted(category_map.values(), key=lambda item: item["sales_amount"], reverse=True):
+        gross_profit = row["sales_amount"] - row["cost_amount"]
+        category_rows.append(
+            {
+                **row,
+                "sales_amount": _round(row["sales_amount"]),
+                "cost_amount": _round(row["cost_amount"]),
+                "gross_profit": _round(gross_profit),
+                "gross_profit_rate": _rate(gross_profit, row["sales_amount"]),
+            }
+        )
+    return product_rows[:10], category_rows
+
+
+def _round(value: float) -> float:
+    return round(float(value or 0), 2)
+
+
+def _rate(numerator: float, denominator: float) -> float:
+    return round((float(numerator or 0) / float(denominator or 1)) * 100, 2) if denominator else 0

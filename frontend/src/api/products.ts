@@ -35,6 +35,7 @@ export interface SKU {
   sub_color_code?: string;
   size_code?: string;
   is_standard_code?: boolean;
+  created_inventory_count?: number;
 }
 
 export interface SKUCodePreview {

@@ -29,6 +29,7 @@ import {
   fetchTransfers,
   markTransferArrival,
   rejectReplenishment,
+  updateInventorySafetyStock,
   type InventoryItem,
   type ReplenishmentRequest,
   type TransferRecord
@@ -85,6 +86,8 @@ export default function InventoryReplenishment() {
   const [statusFilter, setStatusFilter] = useState<InventoryStatus>('全部');
   const [selectedInventory, setSelectedInventory] = useState<InventoryItem | null>(null);
   const [detailInventory, setDetailInventory] = useState<InventoryItem | null>(null);
+  const [safetyStockInventory, setSafetyStockInventory] = useState<InventoryItem | null>(null);
+  const [safetyStockValue, setSafetyStockValue] = useState<number>(0);
 
   const loadData = async () => {
     setLoading(true);
@@ -237,6 +240,30 @@ export default function InventoryReplenishment() {
     }
   };
 
+  const openSafetyStockModal = (record: InventoryItem) => {
+    setSafetyStockInventory(record);
+    setSafetyStockValue(Math.max(Number(record.safety_stock) || 0, 0));
+  };
+
+  const submitSafetyStock = async () => {
+    if (!safetyStockInventory) return;
+    if (safetyStockValue < 0) {
+      messageApi.error('安全库存不能小于 0');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await updateInventorySafetyStock(safetyStockInventory.id, safetyStockValue);
+      messageApi.success('安全库存已更新');
+      setSafetyStockInventory(null);
+      await loadData();
+    } catch {
+      messageApi.error('安全库存更新失败，请确认库存记录是否存在。');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const resetFilters = () => {
     setStoreFilter('全部');
     setCategoryFilter('全部');
@@ -298,6 +325,9 @@ export default function InventoryReplenishment() {
           </Button>
           <Button type="link" onClick={() => setSelectedInventory(record)}>
             提交补货
+          </Button>
+          <Button type="link" onClick={() => openSafetyStockModal(record)}>
+            编辑安全库存
           </Button>
         </Space>
       )
@@ -511,6 +541,38 @@ export default function InventoryReplenishment() {
             </Descriptions.Item>
             <Descriptions.Item label="更新时间">{formatDate(detailInventory.updated_at)}</Descriptions.Item>
           </Descriptions>
+        )}
+      </Modal>
+
+      <Modal
+        title="编辑安全库存"
+        open={Boolean(safetyStockInventory)}
+        onCancel={() => setSafetyStockInventory(null)}
+        onOk={submitSafetyStock}
+        confirmLoading={submitting}
+        okText="保存"
+        cancelText="取消"
+      >
+        {safetyStockInventory && (
+          <>
+            <Descriptions bordered size="small" column={1} className="inventory-descriptions">
+              <Descriptions.Item label="门店">{safetyStockInventory.store?.name ?? '-'}</Descriptions.Item>
+              <Descriptions.Item label="商品名称">{productName(safetyStockInventory)}</Descriptions.Item>
+              <Descriptions.Item label="SKU">{skuCode(safetyStockInventory)}</Descriptions.Item>
+              <Descriptions.Item label="当前库存">{safetyStockInventory.quantity ?? 0}</Descriptions.Item>
+              <Descriptions.Item label="原安全库存">{safetyStockInventory.safety_stock ?? 0}</Descriptions.Item>
+            </Descriptions>
+            <Form layout="vertical">
+              <Form.Item label="新安全库存" required>
+                <InputNumber
+                  min={0}
+                  value={safetyStockValue}
+                  onChange={(value) => setSafetyStockValue(Math.max(Number(value) || 0, 0))}
+                  className="full-width-control"
+                />
+              </Form.Item>
+            </Form>
+          </>
         )}
       </Modal>
     </div>

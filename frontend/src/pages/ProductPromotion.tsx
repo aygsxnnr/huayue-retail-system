@@ -443,8 +443,12 @@ export default function ProductPromotion() {
         await updateSku(editingSku.id, payload);
         messageApi.success('SKU信息已更新');
       } else {
-        await createSku(payload);
-        messageApi.success('SKU已新增');
+        const sku = await createSku(payload);
+        if (Number.isFinite(sku.created_inventory_count)) {
+          messageApi.success(`SKU 创建成功，已同步生成 ${sku.created_inventory_count || 0} 条门店库存记录。`);
+        } else {
+          messageApi.success('SKU 创建成功，已同步生成门店库存记录，可在库存与补货页面进行补货管理。');
+        }
       }
       setSkuModalOpen(false);
       setEditingSku(null);

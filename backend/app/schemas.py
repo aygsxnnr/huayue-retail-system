@@ -15,6 +15,24 @@ class StoreOut(BaseModel):
     status: str
 
 
+class StoreCreate(BaseModel):
+    code: str
+    name: str
+    city: str = ""
+    address: str = ""
+    manager: str = ""
+    status: str = "正常营业"
+
+
+class StoreUpdate(BaseModel):
+    code: str | None = None
+    name: str | None = None
+    city: str | None = None
+    address: str | None = None
+    manager: str | None = None
+    status: str | None = None
+
+
 class ProductOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -79,6 +97,7 @@ class SKUOut(BaseModel):
     sub_color_code: str = ""
     size_code: str = ""
     is_standard_code: bool = False
+    created_inventory_count: int = 0
 
 
 class SKUCodePreviewRequest(BaseModel):
@@ -310,6 +329,18 @@ class MarketingTouchCreate(BaseModel):
     remark: str = ""
 
 
+class MarketingTouchBatchCreate(BaseModel):
+    member_ids: list[int] = Field(min_length=1)
+    coupon_ids: list[int] = Field(min_length=1)
+    channels: list[str] = Field(min_length=1)
+    remark: str = "手动发放"
+
+
+class MarketingTouchBatchOut(BaseModel):
+    created_count: int
+    skipped_count: int
+
+
 class MarketingTouchOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -375,6 +406,10 @@ class InventoryOut(BaseModel):
     recent_7d_sales: int = 0
     suggested_qty: int = 0
     inventory_status: str = "正常"
+
+
+class InventorySafetyStockUpdate(BaseModel):
+    safety_stock: int = Field(ge=0)
 
 
 class ReplenishmentCreate(BaseModel):
@@ -515,6 +550,138 @@ class FinanceRecordOut(BaseModel):
     promotion_loss: float
     reconcile_status: str
     business_date: date
+
+
+class FinanceSummaryOut(BaseModel):
+    today_order_amount: float
+    today_payment_amount: float
+    today_difference_amount: float
+    pending_difference_count: int
+    settled_count: int
+    gross_profit: float
+    gross_profit_rate: float
+    promotion_discount_amount: float
+
+
+class FinanceRecordViewOut(BaseModel):
+    id: int
+    record_no: str
+    order_no: str
+    store_name: str
+    cashier_name: str
+    order_amount: float
+    payment_amount: float
+    discount_amount: float
+    difference_amount: float
+    payment_method: str
+    status: str
+    reconciliation_time: date
+
+
+class FinanceBatchResolveIn(BaseModel):
+    record_ids: list[int]
+
+
+class FinanceBatchReconcileIn(BaseModel):
+    record_ids: list[int]
+
+
+class FinanceBatchResolveFailedItem(BaseModel):
+    id: int
+    reason: str
+
+
+class FinanceBatchResolveOut(BaseModel):
+    success_count: int
+    failed_count: int
+    failed_items: list[FinanceBatchResolveFailedItem]
+
+
+class FinanceBatchReconcileOut(BaseModel):
+    success_count: int
+    failed_count: int
+    failed_items: list[FinanceBatchResolveFailedItem]
+
+
+class PaymentRecordViewOut(BaseModel):
+    id: int
+    payment_no: str
+    order_no: str
+    store_name: str
+    payment_method: str
+    payable_amount: float
+    paid_amount: float
+    payment_status: str
+    payment_time: datetime
+    third_party_no: str
+    cashier_name: str = "-"
+    finance_record_no: str = "-"
+    difference_amount: float = 0
+    remark: str = "-"
+
+
+class FinanceTrendPoint(BaseModel):
+    date: str
+    order_amount: float = 0
+    payment_amount: float = 0
+    difference_amount: float = 0
+    sales_amount: float = 0
+    cost_amount: float = 0
+    gross_profit: float = 0
+
+
+class ProductProfitRankOut(BaseModel):
+    rank: int
+    product_name: str
+    sku_code: str
+    sales_quantity: int
+    sales_amount: float
+    cost_amount: float
+    gross_profit: float
+    gross_profit_rate: float
+
+
+class CategoryProfitOut(BaseModel):
+    category: str
+    sales_amount: float
+    cost_amount: float
+    gross_profit: float
+    gross_profit_rate: float
+
+
+class ProfitTrendOut(BaseModel):
+    trend: list[FinanceTrendPoint]
+    product_profit_rank: list[ProductProfitRankOut]
+    category_profit: list[CategoryProfitOut]
+
+
+class PromotionLossOut(BaseModel):
+    promotion_id: int
+    promotion_code: str
+    promotion_name: str
+    promotion_type: str
+    order_count: int
+    original_amount: float
+    discount_amount: float
+    paid_amount: float
+    cost_amount: float
+    gross_profit: float
+    gross_profit_rate: float
+    status: str
+
+
+class StoreSettlementOut(BaseModel):
+    store_id: int
+    store_name: str
+    sales_amount: float
+    order_count: int
+    average_order_value: float
+    cost_amount: float
+    gross_profit: float
+    gross_profit_rate: float
+    promotion_discount_amount: float
+    difference_amount: float
+    settlement_status: str
 
 
 class DashboardSummary(BaseModel):

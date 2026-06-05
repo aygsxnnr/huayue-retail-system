@@ -95,6 +95,18 @@ export interface MarketingTouchPayload {
   remark?: string;
 }
 
+export interface MarketingTouchBatchPayload {
+  member_ids: number[];
+  coupon_ids: number[];
+  channels: string[];
+  remark?: string;
+}
+
+export interface MarketingTouchBatchResult {
+  created_count: number;
+  skipped_count: number;
+}
+
 export interface RepurchaseRank {
   rank: number;
   member_id: number;
@@ -170,6 +182,11 @@ export async function fetchMarketingTouches() {
 
 export async function createMarketingTouch(payload: MarketingTouchPayload) {
   const { data } = await request.post<MarketingTouch>('/members/marketing-touches', payload);
+  return data;
+}
+
+export async function createMarketingTouchesBatch(payload: MarketingTouchBatchPayload) {
+  const { data } = await request.post<MarketingTouchBatchResult>('/members/marketing-touches/batch', payload);
   return data;
 }
 

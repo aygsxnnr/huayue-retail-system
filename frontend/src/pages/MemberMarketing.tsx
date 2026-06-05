@@ -25,8 +25,9 @@ import type { ColumnsType } from 'antd/es/table';
 import * as echarts from 'echarts';
 import MetricCard from '../components/MetricCard';
 import { fetchCoupons, type Coupon } from '../api/products';
+import { createStore, fetchStores, updateStore, updateStoreStatus, type Store } from '../api/stores';
 import {
-  createMarketingTouch,
+  createMarketingTouchesBatch,
   createMember,
   fetchMarketingTouches,
   fetchMemberProfile,
@@ -48,6 +49,82 @@ import {
 const memberLevels = ['普通会员', '银卡会员', '金卡会员', '黑金会员'];
 const memberStatuses = ['正常', '活跃', '沉睡', '流失风险', '已停用'];
 const touchChannels = ['短信', '微信', 'APP推送', '小程序', '人工电话'];
+const storeStatuses = ['正常营业', '临时歇业', '闭店升级', '已关闭', '停用'];
+const normalStoreStatuses = ['正常营业', '营业中'];
+const closedStoreStatuses = ['已关闭', '停用'];
+
+interface RegisteredStoreItem {
+  id?: number;
+  code?: string;
+  name: string;
+}
+
+function parseRegisteredStores(value?: string | null, stores: Store[] = []): RegisteredStoreItem[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) {
+      return parsed
+        .map((item) => {
+          if (typeof item === 'string' || typeof item === 'number') {
+            const store = stores.find((option) => String(option.id) === String(item) || option.name === String(item));
+            return store ? { id: store.id, code: store.code, name: store.name } : { name: String(item) };
+          }
+          if (item && typeof item === 'object') {
+            const id = Number((item as RegisteredStoreItem).id);
+            const store = stores.find((option) => option.id === id || option.name === (item as RegisteredStoreItem).name);
+            return store
+              ? { id: store.id, code: store.code, name: store.name }
+              : { id: Number.isFinite(id) ? id : undefined, code: (item as RegisteredStoreItem).code, name: (item as RegisteredStoreItem).name || '-' };
+          }
+          return null;
+        })
+        .filter(Boolean) as RegisteredStoreItem[];
+    }
+  } catch {
+    // Legacy plain text is handled below.
+  }
+  return value
+    .split(/[、,，]/)
+    .map((name) => name.trim())
+    .filter(Boolean)
+    .map((name) => {
+      const store = stores.find((option) => option.name === name || option.code === name);
+      return store ? { id: store.id, code: store.code, name: store.name } : { name };
+    });
+}
+
+function registeredStoreValues(value?: string | null, stores: Store[] = []) {
+  return parseRegisteredStores(value, stores)
+    .map((item) => (Number.isFinite(item.id) ? item.id : item.name))
+    .filter(Boolean) as Array<number | string>;
+}
+
+function serializeRegisteredStores(values: Array<number | string> = [], stores: Store[] = []) {
+  const selectedStores = values
+    .map((value) => {
+      const store = stores.find((item) => item.id === value || item.name === value);
+      return store ? { id: store.id, code: store.code, name: store.name } : { name: String(value) };
+    })
+    .filter((item) => item.name && item.name !== 'undefined');
+  return selectedStores.length
+    ? JSON.stringify(selectedStores)
+    : '';
+}
+
+function RegisteredStoreTags({ value, stores }: { value?: string | null; stores: Store[] }) {
+  const items = parseRegisteredStores(value, stores);
+  if (!items.length) return <span>-</span>;
+  return (
+    <Space wrap size={[0, 4]}>
+      {items.map((item, index) => (
+        <Tag key={`${item.id ?? item.name}-${index}`} color="blue">
+          {item.code ? `${item.code} - ${item.name}` : item.name}
+        </Tag>
+      ))}
+    </Space>
+  );
+}
 
 function safeNumber(value: unknown) {
   const number = Number(value);
@@ -100,6 +177,19 @@ function tagColor(value: string) {
   return 'default';
 }
 
+function storeStatusColor(value?: string) {
+  if (!value || normalStoreStatuses.includes(value)) return 'green';
+  if (value === '临时歇业') return 'orange';
+  if (value === '闭店升级') return 'blue';
+  if (closedStoreStatuses.includes(value)) return 'red';
+  return 'default';
+}
+
+function storeOptionLabel(store: Store) {
+  const base = `${store.code || '-'} - ${store.name || '-'}`;
+  return normalStoreStatuses.includes(store.status) ? base : `${base}（${store.status || '状态未设置'}）`;
+}
+
 function LevelChart({ data }: { data: RepurchaseAnalysis['level_distribution'] }) {
   useEffect(() => {
     const node = document.getElementById('member-level-chart');
@@ -133,7 +223,9 @@ export default function MemberMarketing() {
   const [messageApi, contextHolder] = message.useMessage();
   const [memberForm] = Form.useForm();
   const [touchForm] = Form.useForm();
+  const [storeForm] = Form.useForm();
   const [members, setMembers] = useState<Member[]>([]);
+  const [stores, setStores] = useState<Store[]>([]);
   const [coupons, setCoupons] = useState<Coupon[]>([]);
   const [rfm, setRfm] = useState<RFMRecord[]>([]);
   const [touches, setTouches] = useState<MarketingTouch[]>([]);
@@ -142,6 +234,9 @@ export default function MemberMarketing() {
   const [selectedMember, setSelectedMember] = useState<Member | null>(null);
   const [memberModalOpen, setMemberModalOpen] = useState(false);
   const [touchModalOpen, setTouchModalOpen] = useState(false);
+  const [storeModalOpen, setStoreModalOpen] = useState(false);
+  const [storeManageOpen, setStoreManageOpen] = useState(false);
+  const [editingStore, setEditingStore] = useState<Store | null>(null);
   const [editingMember, setEditingMember] = useState<Member | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -150,6 +245,19 @@ export default function MemberMarketing() {
   const [levelFilter, setLevelFilter] = useState('全部');
   const [statusFilter, setStatusFilter] = useState('全部');
   const [activeKey, setActiveKey] = useState('members');
+  const selectedRegisteredStores = Form.useWatch('registered_store', memberForm) || [];
+
+  const loadStores = async () => {
+    try {
+      const storeData = await fetchStores();
+      setStores(storeData || []);
+      return storeData || [];
+    } catch {
+      messageApi.warning('门店列表读取失败，注册门店下拉暂为空。');
+      setStores([]);
+      return [];
+    }
+  };
 
   const loadData = async () => {
     setLoading(true);
@@ -178,6 +286,7 @@ export default function MemberMarketing() {
   };
 
   useEffect(() => {
+    loadStores();
     loadData();
   }, []);
 
@@ -226,28 +335,55 @@ export default function MemberMarketing() {
     };
   }, [coupons, members]);
 
+  const storeOptions = useMemo(() => {
+    const selectedValues = selectedRegisteredStores as Array<number | string>;
+    const options = stores.map((store) => ({
+      value: store.id as number | string,
+      label: storeOptionLabel(store),
+      disabled: closedStoreStatuses.includes(store.status) && !selectedValues.includes(store.id)
+    }));
+    parseRegisteredStores(editingMember?.registered_store, stores).forEach((item) => {
+      const value = Number.isFinite(item.id) ? item.id as number : item.name;
+      if (!options.some((option) => option.value === value)) {
+        options.push({
+          value,
+          label: item.code ? `${item.code} - ${item.name}` : item.name,
+          disabled: false
+        });
+      }
+    });
+    return options;
+  }, [editingMember?.registered_store, selectedRegisteredStores, stores]);
+
   const openCreateMember = () => {
     setEditingMember(null);
     memberForm.resetFields();
-    memberForm.setFieldsValue({ level: '普通会员', status: '正常', points: 0, total_spent: 0, total_orders: 0 });
+    memberForm.setFieldsValue({ level: '普通会员', status: '正常', points: 0, total_spent: 0, total_orders: 0, registered_store: [] });
     setMemberModalOpen(true);
   };
 
   const openEditMember = (member: Member) => {
     setEditingMember(member);
-    memberForm.setFieldsValue(member);
+    memberForm.setFieldsValue({
+      ...member,
+      registered_store: registeredStoreValues(member.registered_store, stores)
+    });
     setMemberModalOpen(true);
   };
 
   const submitMember = async () => {
     const values = await memberForm.validateFields();
+    const payload = {
+      ...values,
+      registered_store: serializeRegisteredStores(values.registered_store, stores)
+    };
     setSubmitting(true);
     try {
       if (editingMember) {
-        await updateMember(editingMember.id, values);
+        await updateMember(editingMember.id, payload);
         messageApi.success('会员信息已更新');
       } else {
-        await createMember(values);
+        await createMember(payload);
         messageApi.success('会员新增成功');
       }
       setMemberModalOpen(false);
@@ -269,6 +405,56 @@ export default function MemberMarketing() {
     }
   };
 
+  const openStoreModal = (store?: Store) => {
+    setEditingStore(store || null);
+    storeForm.resetFields();
+    storeForm.setFieldsValue(store || { status: '正常营业' });
+    setStoreModalOpen(true);
+  };
+
+  const submitStore = async () => {
+    const values = await storeForm.validateFields();
+    setSubmitting(true);
+    try {
+      const store = editingStore
+        ? await updateStore(editingStore.id, values)
+        : await createStore(values);
+      messageApi.success(editingStore ? '门店信息已更新' : '门店新增成功');
+      const nextStores = await loadStores();
+      const currentIds = memberForm.getFieldValue('registered_store') || [];
+      if (store?.id && !editingStore) {
+        const exists = nextStores.some((item) => item.id === store.id);
+        memberForm.setFieldsValue({
+          registered_store: Array.from(new Set([...(currentIds || []), exists ? store.id : store.id]))
+        });
+      }
+      setStoreModalOpen(false);
+      setEditingStore(null);
+    } catch {
+      messageApi.error(editingStore ? '门店信息更新失败，请检查门店编码是否重复。' : '门店新增失败，请检查门店编码是否重复。');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const changeStoreStatus = (store: Store, status: string) => {
+    Modal.confirm({
+      title: '确认修改门店状态',
+      content: `确认将该门店状态修改为 ${status} 吗？历史数据将保留。`,
+      okText: '确认修改',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          await updateStoreStatus(store.id, status);
+          messageApi.success('门店状态已更新');
+          await loadStores();
+        } catch {
+          messageApi.error('门店状态修改失败');
+        }
+      }
+    });
+  };
+
   const openTouchModal = (member?: Member) => {
     const target = member || selectedMember;
     if (!target) {
@@ -277,30 +463,48 @@ export default function MemberMarketing() {
     }
     setSelectedMember(target);
     touchForm.resetFields();
-    touchForm.setFieldsValue({ member_id: target.id, channel: '微信', participation_status: '未参与', writeoff_status: '未核销' });
+    touchForm.setFieldsValue({ member_id: target.id, coupon_ids: [], channels: ['微信'], remark: '手动发放' });
     setTouchModalOpen(true);
   };
 
   const submitTouch = async () => {
     const values = await touchForm.validateFields();
-    setSubmitting(true);
-    try {
-      await createMarketingTouch(values);
-      messageApi.success('优惠券已发放并生成营销触达记录');
-      setTouchModalOpen(false);
-      const [touchData, analysisData, couponData] = await Promise.all([
-        fetchMarketingTouches(),
-        fetchRepurchaseAnalysis(),
-        fetchCoupons()
-      ]);
-      setTouches(touchData);
-      setAnalysis(analysisData);
-      setCoupons(couponData);
-    } catch {
-      messageApi.error('发放优惠券失败，请检查会员或优惠券状态。');
-    } finally {
-      setSubmitting(false);
-    }
+    const couponIds = values.coupon_ids || [];
+    const channels = values.channels || [];
+    Modal.confirm({
+      title: '确认发放优惠券',
+      content: `将向 1 位会员发放 ${couponIds.length} 张优惠券，并通过 ${channels.length} 个渠道触达。`,
+      okText: '确认发放',
+      cancelText: '取消',
+      onOk: async () => {
+        setSubmitting(true);
+        try {
+          const result = await createMarketingTouchesBatch({
+            member_ids: [values.member_id],
+            coupon_ids: couponIds,
+            channels,
+            remark: values.remark || '手动发放'
+          });
+          messageApi.success(`优惠券发放完成，新增 ${result.created_count} 条触达记录，跳过 ${result.skipped_count} 条重复记录。`);
+          setTouchModalOpen(false);
+          const [touchData, analysisData, couponData] = await Promise.all([
+            fetchMarketingTouches(),
+            fetchRepurchaseAnalysis(),
+            fetchCoupons()
+          ]);
+          setTouches(touchData);
+          setAnalysis(analysisData);
+          setCoupons(couponData);
+          if (selectedMember) {
+            fetchMemberProfile(selectedMember.id).then(setProfile).catch(() => setProfile(null));
+          }
+        } catch {
+          messageApi.error('发放优惠券失败，请检查会员或优惠券状态。');
+        } finally {
+          setSubmitting(false);
+        }
+      }
+    });
   };
 
   const handleRecalculate = async () => {
@@ -320,6 +524,7 @@ export default function MemberMarketing() {
     { title: '会员号', dataIndex: 'member_no', width: 140 },
     { title: '姓名', dataIndex: 'name', width: 100 },
     { title: '手机号', dataIndex: 'phone', width: 130, render: maskPhone },
+    { title: '注册门店', dataIndex: 'registered_store', width: 220, render: (value: string) => <RegisteredStoreTags value={value} stores={stores} /> },
     { title: '会员等级', dataIndex: 'level', width: 110, render: (value: string) => <Tag color={tagColor(value)}>{value}</Tag> },
     { title: '当前积分', width: 100, render: (_, record) => memberPoints(record) },
     { title: '累计消费金额', width: 130, render: (_, record) => money(memberAmount(record)) },
@@ -407,6 +612,39 @@ export default function MemberMarketing() {
     { title: '带动销售额', dataIndex: 'driven_sales_amount', render: money }
   ];
 
+  const storeColumns: ColumnsType<Store> = [
+    { title: '门店编码', dataIndex: 'code', width: 120, render: (value: string) => value || '-' },
+    { title: '门店名称', dataIndex: 'name', width: 180, render: (value: string) => value || '-' },
+    { title: '城市', dataIndex: 'city', width: 100, render: (value: string) => value || '-' },
+    { title: '地址', dataIndex: 'address', width: 220, render: (value: string) => value || '-' },
+    { title: '负责人', dataIndex: 'manager', width: 110, render: (value: string) => value || '-' },
+    {
+      title: '门店状态',
+      dataIndex: 'status',
+      width: 130,
+      render: (value: string) => <Tag color={storeStatusColor(value)}>{value || '-'}</Tag>
+    },
+    {
+      title: '操作',
+      width: 260,
+      fixed: 'right',
+      render: (_, record) => (
+        <Space>
+          <Button type="link" onClick={() => openStoreModal(record)}>
+            编辑
+          </Button>
+          <Select
+            size="small"
+            value={record.status || '正常营业'}
+            style={{ width: 120 }}
+            options={storeStatuses.map((status) => ({ value: status, label: status }))}
+            onChange={(status) => changeStoreStatus(record, status)}
+          />
+        </Space>
+      )
+    }
+  ];
+
   if (error) return <Alert type="error" message={error} showIcon />;
 
   return (
@@ -446,6 +684,7 @@ export default function MemberMarketing() {
                     <Select value={levelFilter} onChange={setLevelFilter} options={['全部', ...memberLevels].map((value) => ({ value, label: value }))} style={{ width: 140 }} />
                     <Select value={statusFilter} onChange={setStatusFilter} options={['全部', ...memberStatuses].map((value) => ({ value, label: value }))} style={{ width: 140 }} />
                     <Button type="primary" onClick={openCreateMember}>新增会员</Button>
+                    <Button onClick={() => setStoreManageOpen(true)}>门店管理</Button>
                   </Space>
                   <Table rowKey="id" loading={loading} columns={memberColumns} dataSource={filteredMembers} scroll={{ x: 1500 }} pagination={{ pageSize: 8 }} />
                 </>
@@ -463,7 +702,7 @@ export default function MemberMarketing() {
                         <Descriptions.Item label="姓名">{profile.member.name}</Descriptions.Item>
                         <Descriptions.Item label="手机号">{maskPhone(profile.member.phone)}</Descriptions.Item>
                         <Descriptions.Item label="注册时间">{formatDate(profile.member.joined_at)}</Descriptions.Item>
-                        <Descriptions.Item label="注册门店">{profile.member.registered_store || '-'}</Descriptions.Item>
+                        <Descriptions.Item label="注册门店"><RegisteredStoreTags value={profile.member.registered_store} stores={stores} /></Descriptions.Item>
                         <Descriptions.Item label="会员等级"><Tag color={tagColor(profile.member.level)}>{profile.member.level}</Tag></Descriptions.Item>
                         <Descriptions.Item label="当前积分">{memberPoints(profile.member)}</Descriptions.Item>
                         <Descriptions.Item label="会员状态"><Tag color={tagColor(profile.member.status)}>{profile.member.status}</Tag></Descriptions.Item>
@@ -560,7 +799,27 @@ export default function MemberMarketing() {
           <Form.Item label="手机号" name="phone" rules={[{ required: true, message: '请输入手机号' }]}><Input /></Form.Item>
           <Form.Item label="会员等级" name="level"><Select options={memberLevels.map((value) => ({ value, label: value }))} /></Form.Item>
           <Form.Item label="会员状态" name="status"><Select options={memberStatuses.map((value) => ({ value, label: value }))} /></Form.Item>
-          <Form.Item label="注册门店" name="registered_store"><Input /></Form.Item>
+          <Form.Item label="注册门店" name="registered_store">
+            <Select
+              mode="multiple"
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              placeholder="可选择多个注册门店，非必填"
+              options={storeOptions}
+              dropdownRender={(menu) => (
+                <>
+                  {menu}
+                  <Button type="link" block onClick={() => openStoreModal()}>
+                    新增门店
+                  </Button>
+                  <Button type="link" block onClick={() => setStoreManageOpen(true)}>
+                    门店管理
+                  </Button>
+                </>
+              )}
+            />
+          </Form.Item>
           <Form.Item label="会员标签" name="tags"><Input placeholder="多个标签用逗号分隔" /></Form.Item>
           <Row gutter={12}>
             <Col span={8}><Form.Item label="积分" name="points"><InputNumber min={0} className="full-width-control" /></Form.Item></Col>
@@ -570,15 +829,85 @@ export default function MemberMarketing() {
         </Form>
       </Modal>
 
+      <Modal
+        title="门店管理"
+        open={storeManageOpen}
+        onCancel={() => setStoreManageOpen(false)}
+        footer={<Button onClick={() => setStoreManageOpen(false)}>关闭</Button>}
+        width={960}
+      >
+        <Typography.Text type="secondary">
+          门店新增、编辑和状态变更后续将接入登录、角色与权限管理模块进行控制。
+        </Typography.Text>
+        <Space className="inventory-toolbar" style={{ marginTop: 12, marginBottom: 12 }}>
+          <Button type="primary" onClick={() => openStoreModal()}>
+            新增门店
+          </Button>
+        </Space>
+        <Table
+          rowKey="id"
+          columns={storeColumns}
+          dataSource={stores}
+          scroll={{ x: 1120 }}
+          pagination={{ pageSize: 6 }}
+        />
+      </Modal>
+
+      <Modal
+        title={editingStore ? '编辑门店' : '新增门店'}
+        open={storeModalOpen}
+        onCancel={() => {
+          setStoreModalOpen(false);
+          setEditingStore(null);
+        }}
+        onOk={submitStore}
+        confirmLoading={submitting}
+        okText={editingStore ? '保存修改' : '保存门店'}
+        cancelText="取消"
+      >
+        <Form form={storeForm} layout="vertical">
+          <Form.Item label="门店编码" name="code" rules={[{ required: true, message: '请输入门店编码' }]}>
+            <Input placeholder="例如：GZ001" />
+          </Form.Item>
+          <Form.Item label="门店名称" name="name" rules={[{ required: true, message: '请输入门店名称' }]}>
+            <Input placeholder="例如：广州天河城店" />
+          </Form.Item>
+          <Form.Item label="城市" name="city">
+            <Input placeholder="例如：广州" />
+          </Form.Item>
+          <Form.Item label="地址" name="address">
+            <Input placeholder="请输入门店地址" />
+          </Form.Item>
+          <Form.Item label="店长/负责人" name="manager">
+            <Input placeholder="请输入负责人姓名" />
+          </Form.Item>
+          <Form.Item label="状态" name="status">
+            <Select options={storeStatuses.map((value) => ({ value, label: value }))} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
       <Modal title="发放优惠券 / 记录触达" open={touchModalOpen} onCancel={() => setTouchModalOpen(false)} onOk={submitTouch} confirmLoading={submitting} okText="确认发放" cancelText="取消">
         <Form form={touchForm} layout="vertical">
           <Form.Item label="选择会员" name="member_id" rules={[{ required: true, message: '请选择会员' }]}>
             <Select showSearch optionFilterProp="label" options={members.map((member) => ({ value: member.id, label: `${member.member_no} - ${member.name}` }))} />
           </Form.Item>
-          <Form.Item label="选择优惠券" name="coupon_id" rules={[{ required: true, message: '请选择优惠券' }]}>
-            <Select optionFilterProp="label" options={coupons.map((coupon) => ({ value: coupon.id, label: `${coupon.code} - ${coupon.name}` }))} />
+          <Form.Item label="选择优惠券" name="coupon_ids" rules={[{ required: true, message: '请至少选择 1 张优惠券' }]}>
+            <Select
+              mode="multiple"
+              allowClear
+              optionFilterProp="label"
+              placeholder="可多选优惠券"
+              options={coupons.map((coupon) => ({ value: coupon.id, label: `${coupon.code || '-'} - ${coupon.name || '-'}` }))}
+            />
           </Form.Item>
-          <Form.Item label="触达渠道" name="channel"><Select options={touchChannels.map((value) => ({ value, label: value }))} /></Form.Item>
+          <Form.Item label="触达渠道" name="channels" rules={[{ required: true, message: '请至少选择 1 个触达渠道' }]}>
+            <Select
+              mode="multiple"
+              allowClear
+              options={touchChannels.map((value) => ({ value, label: value }))}
+            />
+          </Form.Item>
           <Form.Item label="备注" name="remark"><Input.TextArea rows={3} placeholder="例如：针对沉睡会员发放回流券" /></Form.Item>
         </Form>
       </Modal>

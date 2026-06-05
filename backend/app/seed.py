@@ -239,20 +239,30 @@ def seed() -> None:
                 )
         db.flush()
 
-        order_specs = [
-            (stores[0], members[0], promotions[0], [(skus[0], 1), (skus[2], 1)], "微信"),
-            (stores[0], members[2], promotions[1], [(skus[5], 1)], "支付宝"),
-            (stores[1], members[1], None, [(skus[4], 1), (skus[1], 1)], "银行卡"),
-            (stores[2], None, promotions[0], [(skus[3], 1)], "现金"),
-        ]
+        payment_methods = ["微信支付", "支付宝", "银联卡", "现金"]
+        reconcile_statuses = ["已对账", "存在差异", "待对账", "已处理"]
+        order_specs = []
+        for index in range(32):
+            store = stores[index % len(stores)]
+            member = members[index % len(members)] if index % 5 != 4 else None
+            promotion = promotions[index % len(promotions)] if index % 4 != 2 else None
+            first_sku = skus[index % len(skus)]
+            second_sku = skus[(index + 7) % len(skus)]
+            items = [(first_sku, 1 + (index % 2))]
+            if index % 3 == 0:
+                items.append((second_sku, 1))
+            method = payment_methods[index % len(payment_methods)]
+            order_time = datetime.utcnow() - timedelta(days=index % 8, hours=(index * 2) % 24)
+            status = reconcile_statuses[index % len(reconcile_statuses)]
+            order_specs.append((store, member, promotion, items, method, order_time, status))
 
-        for idx, (store, member, promotion, items, method) in enumerate(order_specs, start=1):
+        for idx, (store, member, promotion, items, method, order_time, reconcile_status) in enumerate(order_specs, start=1):
             order = SalesOrder(
-                order_no=f"SO20260603{idx:04d}",
+                order_no=f"SO202606{idx:06d}",
                 store_id=store.id,
                 member_id=member.id if member else None,
                 promotion_id=promotion.id if promotion else None,
-                order_time=datetime.utcnow() - timedelta(hours=idx * 3),
+                order_time=order_time,
                 payment_method=method,
             )
             db.add(order)
@@ -295,17 +305,17 @@ def seed() -> None:
 
             db.add(
                 PaymentRecord(
-                    payment_no=f"PAY20260603{idx:04d}",
+                    payment_no=f"PAY202606{idx:06d}",
                     order_id=order.id,
-                    amount=paid_amount,
+                    amount=round(paid_amount + (18 if reconcile_status == "存在差异" and idx % 2 == 0 else (-12 if reconcile_status == "存在差异" else 0)), 2),
                     method=method,
                     paid_at=order.order_time,
-                    status="支付成功",
+                    status="成功",
                 )
             )
             db.add(
                 FinanceRecord(
-                    record_no=f"FIN20260603{idx:04d}",
+                    record_no=f"FIN202606{idx:06d}",
                     order_id=order.id,
                     store_id=store.id,
                     sales_amount=paid_amount,
@@ -313,7 +323,7 @@ def seed() -> None:
                     gross_profit=round(paid_amount - cost_amount, 2),
                     promotion_loss=round(discount_amount, 2),
                     business_date=order.order_time.date(),
-                    reconcile_status="已对账" if idx != 4 else "存在差异",
+                    reconcile_status=reconcile_status,
                 )
             )
 

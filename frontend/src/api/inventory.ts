@@ -135,3 +135,10 @@ export async function markTransferArrival(id: number) {
   const { data } = await request.put<TransferRecord>(`/inventory/transfers/${id}/arrival`);
   return data;
 }
+
+export async function updateInventorySafetyStock(id: number, safetyStock: number) {
+  const { data } = await request.put<InventoryItem>(`/inventory/${id}/safety-stock`, {
+    safety_stock: safetyStock
+  });
+  return data;
+}

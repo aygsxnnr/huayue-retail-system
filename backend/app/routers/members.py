@@ -37,6 +37,11 @@ def add_marketing_touch(payload: schemas.MarketingTouchCreate, db: Session = Dep
     return crud.create_marketing_touch(db, payload)
 
 
+@router.post("/marketing-touches/batch", response_model=schemas.MarketingTouchBatchOut, status_code=201)
+def add_marketing_touches_batch(payload: schemas.MarketingTouchBatchCreate, db: Session = Depends(get_db)):
+    return crud.batch_create_marketing_touches(db, payload)
+
+
 @router.get("/repurchase-analysis", response_model=schemas.RepurchaseAnalysisOut)
 def get_repurchase_analysis(db: Session = Depends(get_db)):
     return crud.repurchase_analysis(db)

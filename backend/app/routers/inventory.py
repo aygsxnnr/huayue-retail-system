@@ -17,6 +17,15 @@ def get_low_stock(db: Session = Depends(get_db)):
     return crud.list_low_stock(db)
 
 
+@router.put("/{inventory_id}/safety-stock", response_model=schemas.InventoryOut)
+def edit_safety_stock(
+    inventory_id: int,
+    payload: schemas.InventorySafetyStockUpdate,
+    db: Session = Depends(get_db),
+):
+    return crud.update_inventory_safety_stock(db, inventory_id, payload)
+
+
 @router.get("/replenishments", response_model=list[schemas.ReplenishmentOut])
 def get_replenishments(db: Session = Depends(get_db)):
     return crud.list_replenishments(db)
