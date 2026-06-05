@@ -57,6 +57,10 @@ class StatusUpdate(BaseModel):
     status: str
 
 
+class MemberStatusUpdate(BaseModel):
+    status: str
+
+
 class SKUOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -217,6 +221,23 @@ class MemberCreate(BaseModel):
     phone: str
     level: str = "普通会员"
     tags: str = ""
+    points: int = Field(default=0, ge=0)
+    total_spent: float = Field(default=0, ge=0)
+    total_orders: int = Field(default=0, ge=0)
+    status: str = "正常"
+    registered_store: str = "华悦线上会员中心"
+
+
+class MemberUpdate(BaseModel):
+    name: str | None = None
+    phone: str | None = None
+    level: str | None = None
+    tags: str | None = None
+    points: int | None = Field(default=None, ge=0)
+    total_spent: float | None = Field(default=None, ge=0)
+    total_orders: int | None = Field(default=None, ge=0)
+    status: str | None = None
+    registered_store: str | None = None
 
 
 class MemberOut(BaseModel):
@@ -232,7 +253,111 @@ class MemberOut(BaseModel):
     available_coupons: list[str] = Field(default_factory=list)
     points: int
     total_spent: float
+    total_orders: int = 0
+    last_purchase_at: datetime | None = None
+    current_points: int = 0
+    total_amount: float = 0
+    last_purchase_date: datetime | None = None
+    status: str = "正常"
+    registered_store: str = "华悦线上会员中心"
     joined_at: datetime
+
+
+class MemberTagOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    member_id: int
+    r_score: int
+    f_score: int
+    m_score: int
+    member_group: str
+    preference_tag: str
+    price_sensitive_tag: str
+    activity_tag: str
+    risk_tag: str
+    updated_at: datetime
+    member: MemberOut | None = None
+
+
+class MemberProfileOut(BaseModel):
+    member: MemberOut
+    tag_profile: MemberTagOut | None = None
+    recent_products: list[str] = Field(default_factory=list)
+    preferred_categories: list[str] = Field(default_factory=list)
+    recommended_actions: list[str] = Field(default_factory=list)
+
+
+class RFMOut(BaseModel):
+    member_id: int
+    member_no: str
+    name: str
+    r_score: int
+    f_score: int
+    m_score: int
+    member_group: str
+    main_tags: list[str] = Field(default_factory=list)
+    strategy: str
+
+
+class MarketingTouchCreate(BaseModel):
+    member_id: int
+    coupon_id: int | None = None
+    promotion_id: int | None = None
+    channel: str = "微信"
+    participation_status: str = "未参与"
+    writeoff_status: str = "未核销"
+    remark: str = ""
+
+
+class MarketingTouchOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    member_id: int
+    coupon_id: int | None = None
+    promotion_id: int | None = None
+    channel: str
+    touch_time: datetime
+    participation_status: str
+    writeoff_status: str
+    remark: str
+    member: MemberOut | None = None
+    coupon: CouponOut | None = None
+    promotion: PromotionOut | None = None
+
+
+class RepurchaseRankOut(BaseModel):
+    rank: int
+    member_id: int
+    member_no: str
+    name: str
+    total_orders: int
+    total_spent: float
+    last_purchase_at: datetime | None = None
+    level: str
+    repurchase_tag: str
+
+
+class LevelDistributionOut(BaseModel):
+    level: str
+    count: int
+
+
+class MarketingEffectOut(BaseModel):
+    name: str
+    touched_count: int
+    clicked_count: int
+    participated_count: int
+    writeoff_count: int
+    writeoff_rate: float
+    driven_sales_amount: float
+
+
+class RepurchaseAnalysisOut(BaseModel):
+    repurchase_ranking: list[RepurchaseRankOut]
+    level_distribution: list[LevelDistributionOut]
+    marketing_effects: list[MarketingEffectOut]
 
 
 class InventoryOut(BaseModel):

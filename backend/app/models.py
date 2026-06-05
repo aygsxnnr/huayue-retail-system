@@ -124,6 +124,7 @@ class Coupon(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     promotion = relationship("Promotion", back_populates="coupons")
+    marketing_touches = relationship("MarketingTouch", back_populates="coupon")
 
 
 class Member(Base):
@@ -137,9 +138,15 @@ class Member(Base):
     tags: Mapped[str] = mapped_column(String(200), default="")
     points: Mapped[int] = mapped_column(Integer, default=0)
     total_spent: Mapped[float] = mapped_column(Float, default=0)
+    total_orders: Mapped[int] = mapped_column(Integer, default=0)
+    last_purchase_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="正常")
+    registered_store: Mapped[str] = mapped_column(String(100), default="华悦线上会员中心")
     joined_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     orders = relationship("SalesOrder", back_populates="member")
+    tag_profile = relationship("MemberTag", back_populates="member", uselist=False, cascade="all, delete-orphan")
+    marketing_touches = relationship("MarketingTouch", back_populates="member", cascade="all, delete-orphan")
 
     @property
     def member_tags(self) -> list[str]:
@@ -153,6 +160,54 @@ class Member(Base):
         if self.points >= 800:
             coupons.append("积分兑换20元券")
         return coupons
+
+    @property
+    def current_points(self) -> int:
+        return self.points
+
+    @property
+    def total_amount(self) -> float:
+        return self.total_spent
+
+    @property
+    def last_purchase_date(self) -> datetime | None:
+        return self.last_purchase_at
+
+
+class MemberTag(Base):
+    __tablename__ = "member_tags"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    member_id: Mapped[int] = mapped_column(ForeignKey("members.id"), unique=True, index=True)
+    r_score: Mapped[int] = mapped_column(Integer, default=3)
+    f_score: Mapped[int] = mapped_column(Integer, default=3)
+    m_score: Mapped[int] = mapped_column(Integer, default=3)
+    member_group: Mapped[str] = mapped_column(String(50), default="潜力会员")
+    preference_tag: Mapped[str] = mapped_column(String(80), default="新品敏感")
+    price_sensitive_tag: Mapped[str] = mapped_column(String(80), default="价格适中")
+    activity_tag: Mapped[str] = mapped_column(String(80), default="普通活跃")
+    risk_tag: Mapped[str] = mapped_column(String(80), default="稳定")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    member = relationship("Member", back_populates="tag_profile")
+
+
+class MarketingTouch(Base):
+    __tablename__ = "marketing_touches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    member_id: Mapped[int] = mapped_column(ForeignKey("members.id"))
+    coupon_id: Mapped[int | None] = mapped_column(ForeignKey("coupons.id"), nullable=True)
+    promotion_id: Mapped[int | None] = mapped_column(ForeignKey("promotions.id"), nullable=True)
+    channel: Mapped[str] = mapped_column(String(30), default="微信")
+    touch_time: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    participation_status: Mapped[str] = mapped_column(String(30), default="未参与")
+    writeoff_status: Mapped[str] = mapped_column(String(30), default="未核销")
+    remark: Mapped[str] = mapped_column(Text, default="")
+
+    member = relationship("Member", back_populates="marketing_touches")
+    coupon = relationship("Coupon", back_populates="marketing_touches")
+    promotion = relationship("Promotion")
 
 
 class Inventory(Base):

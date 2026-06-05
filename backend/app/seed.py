@@ -6,6 +6,8 @@ from .models import (
     FinanceRecord,
     Inventory,
     Member,
+    MemberTag,
+    MarketingTouch,
     PaymentRecord,
     Product,
     Promotion,
@@ -169,12 +171,58 @@ def seed() -> None:
         ]
         db.add_all(coupons)
 
-        members = [
-            Member(member_no="HY20260001", name="王佳怡", phone="13800000001", level="金卡会员", tags="活跃会员,新品敏感", points=1280, total_spent=3680),
-            Member(member_no="HY20260002", name="李明轩", phone="13800000002", level="普通会员", tags="基础款偏好,价格敏感", points=460, total_spent=980),
-            Member(member_no="HY20260003", name="赵雨晴", phone="13800000003", level="银卡会员", tags="价格敏感,活跃会员", points=820, total_spent=2100),
+        member_names = [
+            "王佳怡", "李明轩", "赵雨晴", "陈思语", "周嘉宁", "林可欣", "黄子涵", "吴诗涵", "刘一诺", "郑雨桐",
+            "孙若溪", "胡安琪", "高晨曦", "何佳乐", "郭芷晴", "马依琳", "罗梓萱", "宋清妍", "朱雅婷", "梁沐晨",
+            "谢心怡", "许知夏", "邓嘉懿", "唐若楠", "冯语嫣", "曹景行", "袁思琪", "潘明朗", "蒋书瑶", "程予安",
         ]
+        member_levels = ["普通会员", "银卡会员", "金卡会员", "黑金会员"]
+        member_statuses = ["活跃", "正常", "沉睡", "流失风险"]
+        preference_tags = ["新品敏感", "基础款偏好", "连衣裙偏好", "价格敏感", "高价值会员", "高活跃", "沉睡会员", "流失风险"]
+        members = []
+        for index, name in enumerate(member_names, start=1):
+            order_count = (index % 7) + (3 if index % 5 == 0 else 0)
+            total_spent = float([680, 1280, 2680, 4280, 8600, 980, 3180, 5680][index % 8])
+            last_days = [5, 18, 45, 88, 120, 210, 12, 65][index % 8]
+            level = "黑金会员" if total_spent >= 8000 else ("金卡会员" if total_spent >= 3000 else ("银卡会员" if total_spent >= 1000 else "普通会员"))
+            members.append(
+                Member(
+                    member_no=f"HY2026{index:04d}",
+                    name=name,
+                    phone=f"1380000{index:04d}",
+                    level=level,
+                    tags=",".join([preference_tags[index % len(preference_tags)], preference_tags[(index + 2) % len(preference_tags)]]),
+                    points=int(total_spent // 2),
+                    total_spent=total_spent,
+                    total_orders=order_count,
+                    last_purchase_at=datetime.utcnow() - timedelta(days=last_days),
+                    status=member_statuses[index % len(member_statuses)],
+                    registered_store=stores[index % len(stores)].name,
+                    joined_at=datetime.utcnow() - timedelta(days=30 + index * 6),
+                )
+            )
         db.add_all(members)
+        db.flush()
+
+        for index, member in enumerate(members, start=1):
+            r_score = 5 if (member.last_purchase_at and (datetime.utcnow() - member.last_purchase_at).days <= 15) else 3 if member.last_purchase_at and (datetime.utcnow() - member.last_purchase_at).days <= 90 else 2
+            f_score = 5 if member.total_orders >= 8 else 4 if member.total_orders >= 5 else 3 if member.total_orders >= 3 else 2
+            m_score = 5 if member.total_spent >= 8000 else 4 if member.total_spent >= 3000 else 3 if member.total_spent >= 1000 else 2
+            member_group = "高价值会员" if min(r_score, f_score, m_score) >= 4 else ("流失风险会员" if r_score <= 2 and m_score >= 4 else ("沉睡会员" if r_score <= 2 else "潜力会员"))
+            db.add(
+                MemberTag(
+                    member_id=member.id,
+                    r_score=r_score,
+                    f_score=f_score,
+                    m_score=m_score,
+                    member_group=member_group,
+                    preference_tag=preference_tags[index % len(preference_tags)],
+                    price_sensitive_tag="价格敏感" if m_score <= 2 else "高价值会员",
+                    activity_tag="高活跃" if f_score >= 4 else "普通活跃",
+                    risk_tag="流失风险" if r_score <= 2 else "稳定",
+                    updated_at=datetime.utcnow() - timedelta(days=index % 5),
+                )
+            )
         db.flush()
 
         inventory_pattern = [18, 4, 0, 12, 3, 9, 1, 16, 5, 2, 11, 0, 7, 20, 4, 13, 6, 0, 8, 3, 17, 10, 2, 14, 5, 1, 19, 4, 12, 6]
@@ -269,6 +317,25 @@ def seed() -> None:
                 )
             )
 
+        db.flush()
+
+        channels = ["短信", "微信", "APP推送", "小程序", "人工电话"]
+        participation_statuses = ["未参与", "已点击", "已参与", "已购买"]
+        writeoff_statuses = ["未核销", "已核销", "已过期"]
+        for index in range(20):
+            coupon = coupons[index % len(coupons)]
+            db.add(
+                MarketingTouch(
+                    member_id=members[index % len(members)].id,
+                    coupon_id=coupon.id,
+                    promotion_id=coupon.promotion_id,
+                    channel=channels[index % len(channels)],
+                    touch_time=datetime.utcnow() - timedelta(days=index, hours=index % 6),
+                    participation_status=participation_statuses[index % len(participation_statuses)],
+                    writeoff_status=writeoff_statuses[index % len(writeoff_statuses)],
+                    remark="第六阶段会员营销演示触达记录",
+                )
+            )
         db.flush()
 
         replenishment_targets = (

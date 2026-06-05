@@ -3,6 +3,7 @@ import { BrowserRouter } from 'react-router-dom';
 import MainLayout from './layouts/MainLayout';
 import Dashboard from './pages/Dashboard';
 import InventoryReplenishment from './pages/InventoryReplenishment';
+import MemberMarketing from './pages/MemberMarketing';
 import POSOrder from './pages/POSOrder';
 import ProductPromotion from './pages/ProductPromotion';
 
@@ -25,7 +26,7 @@ export default function App() {
           <Route path="pos" element={<POSOrder />} />
           <Route path="products" element={<ProductPromotion />} />
           <Route path="inventory" element={<InventoryReplenishment />} />
-          <Route path="members" element={<PlaceholderPage title="会员与营销" />} />
+          <Route path="members" element={<MemberMarketing />} />
           <Route path="finance" element={<PlaceholderPage title="财务对账" />} />
           <Route path="reports" element={<PlaceholderPage title="报表中心" />} />
         </Route>

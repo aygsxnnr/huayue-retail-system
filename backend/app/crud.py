@@ -326,7 +326,13 @@ def update_coupon_status(db: Session, coupon_id: int, status: str) -> models.Cou
 
 
 def list_members(db: Session) -> list[models.Member]:
-    return db.query(models.Member).order_by(models.Member.id).all()
+    _sync_member_metrics(db)
+    return (
+        db.query(models.Member)
+        .options(joinedload(models.Member.tag_profile))
+        .order_by(models.Member.id)
+        .all()
+    )
 
 
 def search_members(db: Session, keyword: str) -> list[models.Member]:
@@ -359,11 +365,377 @@ def create_member(db: Session, payload: schemas.MemberCreate) -> models.Member:
         phone=payload.phone,
         level=payload.level,
         tags=payload.tags,
+        points=payload.points,
+        total_spent=payload.total_spent,
+        total_orders=payload.total_orders,
+        status=payload.status,
+        registered_store=payload.registered_store,
     )
     db.add(member)
     db.commit()
     db.refresh(member)
     return member
+
+
+def update_member(db: Session, member_id: int, payload: schemas.MemberUpdate) -> models.Member:
+    member = db.get(models.Member, member_id)
+    if not member:
+        raise HTTPException(status_code=404, detail="会员不存在")
+    updates = payload.model_dump(exclude_unset=True)
+    if "phone" in updates and updates["phone"] != member.phone:
+        existing = db.query(models.Member).filter(models.Member.phone == updates["phone"]).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="手机号已存在")
+    for key, value in updates.items():
+        setattr(member, key, value)
+    db.commit()
+    db.refresh(member)
+    return member
+
+
+def update_member_status(db: Session, member_id: int, status: str) -> models.Member:
+    member = db.get(models.Member, member_id)
+    if not member:
+        raise HTTPException(status_code=404, detail="会员不存在")
+    member.status = status
+    db.commit()
+    db.refresh(member)
+    return member
+
+
+def get_member_profile(db: Session, member_id: int) -> dict:
+    _sync_member_metrics(db)
+    member = (
+        db.query(models.Member)
+        .options(joinedload(models.Member.tag_profile))
+        .filter(models.Member.id == member_id)
+        .first()
+    )
+    if not member:
+        raise HTTPException(status_code=404, detail="会员不存在")
+    recent_items = (
+        db.query(models.SalesOrderItem)
+        .join(models.SalesOrder, models.SalesOrderItem.order_id == models.SalesOrder.id)
+        .join(models.SKU, models.SalesOrderItem.sku_id == models.SKU.id)
+        .join(models.Product, models.SKU.product_id == models.Product.id)
+        .filter(models.SalesOrder.member_id == member.id)
+        .order_by(models.SalesOrder.order_time.desc())
+        .limit(6)
+        .all()
+    )
+    recent_products = []
+    preferred_categories: dict[str, int] = {}
+    for item in recent_items:
+        product = item.sku.product if item.sku else None
+        if product:
+            recent_products.append(product.name)
+            preferred_categories[product.category] = preferred_categories.get(product.category, 0) + item.quantity
+    tags = member.tag_profile
+    actions = ["发放满减券", "推送新品活动"]
+    if tags and "沉睡" in tags.member_group:
+        actions = ["唤醒沉睡会员", "发放限时回流券", "推荐相似品类商品"]
+    elif tags and "高价值" in tags.member_group:
+        actions = ["邀请参加会员专享活动", "推送高价值新品", "发放专属折扣券"]
+    return {
+        "member": member,
+        "tag_profile": tags,
+        "recent_products": recent_products or ["暂无最近购买商品"],
+        "preferred_categories": [
+            item[0] for item in sorted(preferred_categories.items(), key=lambda entry: entry[1], reverse=True)
+        ] or ["暂无偏好品类"],
+        "recommended_actions": actions,
+    }
+
+
+def list_member_rfm(db: Session) -> list[dict]:
+    _sync_member_metrics(db)
+    _recalculate_member_tags(db, commit=True)
+    members = (
+        db.query(models.Member)
+        .options(joinedload(models.Member.tag_profile))
+        .order_by(models.Member.total_spent.desc(), models.Member.id)
+        .all()
+    )
+    return [_rfm_row(member) for member in members]
+
+
+def recalculate_member_rfm(db: Session) -> list[dict]:
+    _sync_member_metrics(db)
+    _recalculate_member_tags(db, commit=True)
+    return list_member_rfm(db)
+
+
+def list_marketing_touches(db: Session) -> list[models.MarketingTouch]:
+    return (
+        db.query(models.MarketingTouch)
+        .options(
+            joinedload(models.MarketingTouch.member),
+            joinedload(models.MarketingTouch.coupon).joinedload(models.Coupon.promotion),
+            joinedload(models.MarketingTouch.promotion),
+        )
+        .order_by(models.MarketingTouch.touch_time.desc(), models.MarketingTouch.id.desc())
+        .all()
+    )
+
+
+def create_marketing_touch(db: Session, payload: schemas.MarketingTouchCreate) -> models.MarketingTouch:
+    member = db.get(models.Member, payload.member_id)
+    if not member:
+        raise HTTPException(status_code=404, detail="会员不存在")
+    coupon = db.get(models.Coupon, payload.coupon_id) if payload.coupon_id else None
+    if payload.coupon_id and not coupon:
+        raise HTTPException(status_code=404, detail="优惠券不存在")
+    promotion_id = payload.promotion_id or (coupon.promotion_id if coupon else None)
+    touch = models.MarketingTouch(
+        member_id=payload.member_id,
+        coupon_id=payload.coupon_id,
+        promotion_id=promotion_id,
+        channel=payload.channel,
+        participation_status=payload.participation_status,
+        writeoff_status=payload.writeoff_status,
+        remark=payload.remark,
+    )
+    if coupon:
+        coupon.issued_count += 1
+    db.add(touch)
+    db.commit()
+    db.refresh(touch)
+    return touch
+
+
+def repurchase_analysis(db: Session) -> dict:
+    _sync_member_metrics(db)
+    members = (
+        db.query(models.Member)
+        .order_by(models.Member.total_orders.desc(), models.Member.total_spent.desc())
+        .limit(10)
+        .all()
+    )
+    ranking = [
+        {
+            "rank": index,
+            "member_id": member.id,
+            "member_no": member.member_no,
+            "name": member.name,
+            "total_orders": member.total_orders,
+            "total_spent": member.total_spent,
+            "last_purchase_at": member.last_purchase_at,
+            "level": member.level,
+            "repurchase_tag": "高频复购" if member.total_orders >= 5 else "待培育复购",
+        }
+        for index, member in enumerate(members, start=1)
+    ]
+    levels = ["普通会员", "银卡会员", "金卡会员", "黑金会员"]
+    level_distribution = [
+        {
+            "level": level,
+            "count": db.query(models.Member).filter(models.Member.level == level).count(),
+        }
+        for level in levels
+    ]
+    touches = list_marketing_touches(db)
+    effect_map: dict[str, dict] = {}
+    for touch in touches:
+        name = touch.coupon.name if touch.coupon else (touch.promotion.name if touch.promotion else "门店营销触达")
+        row = effect_map.setdefault(
+            name,
+            {
+                "name": name,
+                "touched_count": 0,
+                "clicked_count": 0,
+                "participated_count": 0,
+                "writeoff_count": 0,
+                "driven_sales_amount": 0.0,
+            },
+        )
+        row["touched_count"] += 1
+        if touch.participation_status in {"已点击", "已参与", "已购买"}:
+            row["clicked_count"] += 1
+        if touch.participation_status in {"已参与", "已购买"}:
+            row["participated_count"] += 1
+        if touch.writeoff_status == "已核销":
+            row["writeoff_count"] += 1
+            row["driven_sales_amount"] += 268.0
+    marketing_effects = []
+    for row in effect_map.values():
+        touched = row["touched_count"]
+        writeoff = row["writeoff_count"]
+        marketing_effects.append(
+            {
+                **row,
+                "writeoff_rate": round((writeoff / touched * 100) if touched else 0, 2),
+                "driven_sales_amount": round(row["driven_sales_amount"], 2),
+            }
+        )
+    return {
+        "repurchase_ranking": ranking,
+        "level_distribution": level_distribution,
+        "marketing_effects": marketing_effects,
+    }
+
+
+def _sync_member_metrics(db: Session) -> None:
+    members = db.query(models.Member).all()
+    for member in members:
+        metrics = (
+            db.query(
+                func.count(models.SalesOrder.id),
+                func.coalesce(func.sum(models.SalesOrder.paid_amount), 0),
+                func.max(models.SalesOrder.order_time),
+            )
+            .filter(models.SalesOrder.member_id == member.id)
+            .one()
+        )
+        order_count = int(metrics[0] or 0)
+        order_amount = float(metrics[1] or 0)
+        if order_count:
+            member.total_orders = max(member.total_orders, order_count)
+            member.total_spent = max(member.total_spent, round(order_amount, 2))
+            member.last_purchase_at = metrics[2]
+        member.level = _member_level(member.total_spent)
+        if member.status != "已停用":
+            member.status = _member_status(member.last_purchase_at)
+    db.flush()
+
+
+def _member_level(total_spent: float) -> str:
+    if total_spent >= 8000:
+        return "黑金会员"
+    if total_spent >= 3000:
+        return "金卡会员"
+    if total_spent >= 1000:
+        return "银卡会员"
+    return "普通会员"
+
+
+def _member_status(last_purchase_at: datetime | None) -> str:
+    if not last_purchase_at:
+        return "沉睡"
+    days = (datetime.utcnow() - last_purchase_at).days
+    if days <= 30:
+        return "活跃"
+    if days <= 90:
+        return "正常"
+    if days <= 180:
+        return "沉睡"
+    return "流失风险"
+
+
+def _score_recency(last_purchase_at: datetime | None) -> int:
+    if not last_purchase_at:
+        return 1
+    days = (datetime.utcnow() - last_purchase_at).days
+    if days <= 15:
+        return 5
+    if days <= 30:
+        return 4
+    if days <= 90:
+        return 3
+    if days <= 180:
+        return 2
+    return 1
+
+
+def _score_frequency(total_orders: int) -> int:
+    if total_orders >= 8:
+        return 5
+    if total_orders >= 5:
+        return 4
+    if total_orders >= 3:
+        return 3
+    if total_orders >= 1:
+        return 2
+    return 1
+
+
+def _score_monetary(total_spent: float) -> int:
+    if total_spent >= 8000:
+        return 5
+    if total_spent >= 3000:
+        return 4
+    if total_spent >= 1000:
+        return 3
+    if total_spent > 0:
+        return 2
+    return 1
+
+
+def _rfm_group(r_score: int, f_score: int, m_score: int) -> str:
+    if r_score >= 4 and f_score >= 4 and m_score >= 4:
+        return "高价值会员"
+    if r_score >= 4 and f_score >= 3:
+        return "重点保持会员"
+    if r_score >= 4 and f_score <= 2:
+        return "新会员"
+    if r_score <= 2 and m_score >= 4:
+        return "流失风险会员"
+    if r_score <= 2:
+        return "沉睡会员"
+    if m_score <= 2:
+        return "价格敏感会员"
+    return "潜力会员"
+
+
+def _strategy_for_group(group: str) -> str:
+    strategies = {
+        "高价值会员": "维护专属权益，推送新品预览和高客单搭配推荐",
+        "重点保持会员": "保持稳定触达，发放会员专享折扣券",
+        "潜力会员": "引导二次购买，推荐相似品类商品",
+        "新会员": "发送新客欢迎券，促进首轮复购",
+        "沉睡会员": "使用限时满减券唤醒，降低回流门槛",
+        "流失风险会员": "人工关怀并发放回流优惠券",
+        "价格敏感会员": "优先推送清货和满减活动",
+    }
+    return strategies.get(group, "保持常规会员运营触达")
+
+
+def _recalculate_member_tags(db: Session, commit: bool = False) -> None:
+    for member in db.query(models.Member).all():
+        r_score = _score_recency(member.last_purchase_at)
+        f_score = _score_frequency(member.total_orders)
+        m_score = _score_monetary(member.total_spent)
+        group = _rfm_group(r_score, f_score, m_score)
+        tag = member.tag_profile or models.MemberTag(member_id=member.id)
+        tag.r_score = r_score
+        tag.f_score = f_score
+        tag.m_score = m_score
+        tag.member_group = group
+        tag.preference_tag = "新品敏感" if r_score >= 4 else "基础款偏好"
+        tag.price_sensitive_tag = "价格敏感" if m_score <= 2 else "高价值会员"
+        tag.activity_tag = "高活跃" if f_score >= 4 else ("沉睡会员" if r_score <= 2 else "普通活跃")
+        tag.risk_tag = "流失风险" if r_score <= 2 else "稳定"
+        tag.updated_at = datetime.utcnow()
+        db.add(tag)
+    if commit:
+        db.commit()
+
+
+def _rfm_row(member: models.Member) -> dict:
+    tag = member.tag_profile
+    if not tag:
+        return {
+            "member_id": member.id,
+            "member_no": member.member_no,
+            "name": member.name,
+            "r_score": 1,
+            "f_score": 1,
+            "m_score": 1,
+            "member_group": "潜力会员",
+            "main_tags": ["待补充标签"],
+            "strategy": "完善会员基础数据后进行常规触达",
+        }
+    tags = [tag.preference_tag, tag.price_sensitive_tag, tag.activity_tag, tag.risk_tag]
+    return {
+        "member_id": member.id,
+        "member_no": member.member_no,
+        "name": member.name,
+        "r_score": tag.r_score,
+        "f_score": tag.f_score,
+        "m_score": tag.m_score,
+        "member_group": tag.member_group,
+        "main_tags": [item for item in tags if item],
+        "strategy": _strategy_for_group(tag.member_group),
+    }
 
 
 def list_inventory(db: Session) -> list[models.Inventory]:
@@ -733,6 +1105,8 @@ def create_order(db: Session, payload: schemas.OrderCreate) -> models.SalesOrder
 
     if member:
         member.total_spent = round(member.total_spent + paid_amount, 2)
+        member.total_orders += 1
+        member.last_purchase_at = order.order_time
         member.points += int(paid_amount)
 
     db.commit()
