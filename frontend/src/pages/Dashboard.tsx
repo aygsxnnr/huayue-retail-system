@@ -1,20 +1,24 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, Card, Col, Empty, List, Row, Skeleton, Table, Tag, Typography } from 'antd';
+import { Alert, Card, Col, Empty, List, Row, Segmented, Skeleton, Space, Switch, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import * as echarts from 'echarts';
 import MetricCard from '../components/MetricCard';
 import { fetchDashboard, type DashboardData, type LowStockItem } from '../api/dashboard';
+import ResizableTable from '../components/ResizableTable';
+import { periodOptions, timePeriodKey, type ChartPeriod } from '../utils/timeAggregation';
 
 interface SalesTrendItem {
   date: string;
   sales_amount: number;
 }
 
+
 interface StoreRankItem {
   rank: number;
   store_name: string;
   sales_amount: number;
   order_count: number;
+  status?: string;
 }
 
 interface ProductRankItem {
@@ -44,9 +48,10 @@ const mockSalesTrend: SalesTrendItem[] = [
 ];
 
 const mockStoreRanks: StoreRankItem[] = [
-  { rank: 1, store_name: '上海南京东路店', sales_amount: 4860, order_count: 18 },
-  { rank: 2, store_name: '杭州湖滨银泰店', sales_amount: 3560, order_count: 14 },
-  { rank: 3, store_name: '深圳万象天地店', sales_amount: 2980, order_count: 11 }
+  { rank: 1, store_name: '上海南京东路店', sales_amount: 4860, order_count: 18, status: '正常营业' },
+  { rank: 2, store_name: '杭州湖滨银泰店', sales_amount: 3560, order_count: 14, status: '正常营业' },
+  { rank: 3, store_name: '深圳万象天地店', sales_amount: 2980, order_count: 11, status: '正常营业' },
+  { rank: 4, store_name: '广州天河城店', sales_amount: 1260, order_count: 5, status: '已关闭' }
 ];
 
 const mockProductRanks: ProductRankItem[] = [
@@ -65,6 +70,19 @@ const mockTodos: TodoItem[] = [
 
 function money(value: number) {
   return `¥${value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function invalidStore(status?: string) {
+  return ['已关闭', '停用', 'closed', 'disabled', 'inactive'].includes(String(status || '').toLowerCase()) || ['已关闭', '停用'].includes(status || '');
+}
+
+function aggregateSalesTrend(data: SalesTrendItem[], period: ChartPeriod) {
+  const map = new Map<string, number>();
+  data.forEach((item, index) => {
+    const key = timePeriodKey(`2026-${item.date}`, period, index);
+    map.set(key, (map.get(key) || 0) + Number(item.sales_amount || 0));
+  });
+  return Array.from(map.entries()).map(([date, sales_amount]) => ({ date, sales_amount }));
 }
 
 function getInventoryStatus(record: LowStockItem) {
@@ -165,7 +183,13 @@ function StoreRankChart({ data }: { data: StoreRankItem[] }) {
     const sorted = [...data].sort((a, b) => a.sales_amount - b.sales_amount);
     chart.setOption({
       color: ['#1677ff'],
-      tooltip: { trigger: 'axis' },
+      tooltip: {
+        trigger: 'axis',
+        formatter: (params: unknown) => {
+          const item = sorted[(params as Array<{ dataIndex: number }>)[0]?.dataIndex ?? 0];
+          return `${item.store_name}<br/>门店状态：${item.status || '正常营业'}<br/>销售额：${money(item.sales_amount)}<br/>订单数：${item.order_count}笔`;
+        }
+      },
       grid: { left: 96, right: 28, top: 24, bottom: 28 },
       xAxis: {
         type: 'value',
@@ -174,7 +198,7 @@ function StoreRankChart({ data }: { data: StoreRankItem[] }) {
       },
       yAxis: {
         type: 'category',
-        data: sorted.map((item) => item.store_name),
+        data: sorted.map((item) => invalidStore(item.status) ? `${item.store_name}（${item.status}）` : item.store_name),
         axisTick: { show: false }
       },
       series: [
@@ -207,6 +231,8 @@ export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [dashboardPeriod, setDashboardPeriod] = useState<ChartPeriod>('day');
+  const [includeInvalidStores, setIncludeInvalidStores] = useState(false);
 
   useEffect(() => {
     fetchDashboard()
@@ -215,8 +241,11 @@ export default function Dashboard() {
       .finally(() => setLoading(false));
   }, []);
 
-  const salesTrend = useMemo(() => mockSalesTrend, []);
-  const storeRanks = useMemo(() => mockStoreRanks, []);
+  const salesTrend = useMemo(() => aggregateSalesTrend(mockSalesTrend, dashboardPeriod), [dashboardPeriod]);
+  const storeRanks = useMemo(
+    () => mockStoreRanks.filter((item) => includeInvalidStores || !invalidStore(item.status)),
+    [includeInvalidStores]
+  );
   const productRanks = useMemo(() => mockProductRanks, []);
   const todos = useMemo(() => mockTodos, []);
 
@@ -261,7 +290,8 @@ export default function Dashboard() {
   const storeRankColumns = useMemo<ColumnsType<StoreRankItem>>(
     () => [
       { title: '排名', dataIndex: 'rank', width: 64, render: (rank: number) => <Tag color="blue">第{rank}名</Tag> },
-      { title: '门店名称', dataIndex: 'store_name' },
+      { title: '门店名称', render: (_, record) => invalidStore(record.status) ? `${record.store_name}（${record.status}）` : record.store_name },
+      { title: '状态', dataIndex: 'status', render: (value: string) => <Tag color={invalidStore(value) ? 'red' : 'green'}>{value || '正常营业'}</Tag> },
       { title: '销售额', dataIndex: 'sales_amount', render: (value: number) => money(value) },
       { title: '成交笔数', dataIndex: 'order_count', render: (value: number) => `${value}笔` }
     ],
@@ -339,7 +369,7 @@ export default function Dashboard() {
 
       <Row gutter={[16, 16]} className="dashboard-section">
         <Col xs={24} xl={16}>
-          <Card title="近7日销售趋势">
+          <Card title="销售趋势" extra={<Segmented size="small" value={dashboardPeriod} onChange={(value) => setDashboardPeriod(value as ChartPeriod)} options={[...periodOptions]} />}>
             <SalesTrendChart data={salesTrend} />
           </Card>
         </Col>
@@ -355,9 +385,9 @@ export default function Dashboard() {
 
       <Row gutter={[16, 16]} className="dashboard-section">
         <Col xs={24} xl={15}>
-          <Card title="门店销售排行">
-            <StoreRankChart data={storeRanks} />
-            <Table
+          <Card title="门店销售排行" extra={<Space><span>包含无效门店</span><Switch size="small" checked={includeInvalidStores} onChange={setIncludeInvalidStores} /></Space>}>
+            {storeRanks.length ? <StoreRankChart data={storeRanks} /> : <Empty description="暂无门店排行数据" />}
+            <ResizableTable
               rowKey="rank"
               size="small"
               columns={storeRankColumns}
@@ -383,7 +413,7 @@ export default function Dashboard() {
       </Row>
 
       <Card title="商品销售排行" className="dashboard-section">
-        <Table
+        <ResizableTable
           rowKey="id"
           size="middle"
           columns={productRankColumns}
@@ -393,7 +423,7 @@ export default function Dashboard() {
       </Card>
 
       <Card title="低库存预警" className="dashboard-section">
-        <Table
+        <ResizableTable
           rowKey="id"
           size="middle"
           columns={lowStockColumns}

@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -34,19 +34,17 @@ class Product(Base):
     status: Mapped[str] = mapped_column(String(20), default="在售")
     launch_date: Mapped[date] = mapped_column(Date, default=date.today)
     lifecycle_status: Mapped[str] = mapped_column(String(20), default="新品")
+    sale_price: Mapped[float] = mapped_column(Float, default=0)
+    cost_price: Mapped[float] = mapped_column(Float, default=0)
 
     skus = relationship("SKU", back_populates="product")
 
     @property
     def list_price(self) -> float:
+        if self.sale_price and self.sale_price > 0:
+            return self.sale_price
         prices = [sku.list_price for sku in self.skus]
         return min(prices) if prices else 0
-
-    @property
-    def cost_price(self) -> float:
-        prices = [sku.cost_price for sku in self.skus]
-        return min(prices) if prices else 0
-
 
 class SKU(Base):
     __tablename__ = "skus"
@@ -122,6 +120,20 @@ class Coupon(Base):
     used_count: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(20), default="可用")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    per_member_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    per_order_use_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stackable: Mapped[bool] = mapped_column(Boolean, default=False)
+    total_issue_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_redeem_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    applicable_category_ids: Mapped[str] = mapped_column(Text, default="")
+    applicable_product_ids: Mapped[str] = mapped_column(Text, default="")
+    applicable_seasons: Mapped[str] = mapped_column(Text, default="")
+    applicable_member_levels: Mapped[str] = mapped_column(Text, default="")
+    applicable_member_groups: Mapped[str] = mapped_column(Text, default="")
+    applicable_store_ids: Mapped[str] = mapped_column(Text, default="")
+    target_tags: Mapped[str] = mapped_column(Text, default="")
+    issue_mode: Mapped[str] = mapped_column(String(30), default="手动发放")
+    auto_issue_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
 
     promotion = relationship("Promotion", back_populates="coupons")
     marketing_touches = relationship("MarketingTouch", back_populates="coupon")
@@ -305,8 +317,10 @@ class SalesOrderItem(Base):
     sku_id: Mapped[int] = mapped_column(ForeignKey("skus.id"))
     quantity: Mapped[int] = mapped_column(Integer)
     unit_price: Mapped[float] = mapped_column(Float)
+    unit_cost: Mapped[float] = mapped_column(Float, default=0)
     discount_amount: Mapped[float] = mapped_column(Float, default=0)
     subtotal: Mapped[float] = mapped_column(Float)
+    cost_amount: Mapped[float] = mapped_column(Float, default=0)
 
     order = relationship("SalesOrder", back_populates="items")
     sku = relationship("SKU", back_populates="order_items")

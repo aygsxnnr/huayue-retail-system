@@ -12,8 +12,9 @@ import {
   Popconfirm,
   Row,
   Select,
+  Segmented,
   Space,
-  Table,
+  Switch,
   Tabs,
   Tag,
   Tooltip,
@@ -23,6 +24,9 @@ import {
 import type { ColumnsType, TableRowSelection } from 'antd/es/table/interface';
 import * as echarts from 'echarts';
 import MetricCard from '../components/MetricCard';
+import ResizableTable from '../components/ResizableTable';
+import { fetchStores, type Store } from '../api/stores';
+import { periodOptions, timePeriodKey, type ChartPeriod } from '../utils/timeAggregation';
 import {
   batchResolveFinanceRecords,
   batchReconcileFinanceRecords,
@@ -123,6 +127,33 @@ function paymentPriority(status: string) {
   return priority[status] ?? 5;
 }
 
+function matchesMulti<T>(selected: T[], value: T) {
+  return !selected.length || selected.includes(value);
+}
+
+function aggregateFinanceTrend(data: FinanceTrendPoint[], period: ChartPeriod): FinanceTrendPoint[] {
+  const map = new Map<string, FinanceTrendPoint>();
+  data.forEach((item) => {
+    const key = timePeriodKey(item.date, period);
+    const row = map.get(key) || { ...item, date: key, order_amount: 0, payment_amount: 0, difference_amount: 0, sales_amount: 0, cost_amount: 0, gross_profit: 0 };
+    row.order_amount = safeNumber(row.order_amount) + safeNumber(item.order_amount);
+    row.payment_amount = safeNumber(row.payment_amount) + safeNumber(item.payment_amount);
+    row.difference_amount = safeNumber(row.difference_amount) + safeNumber(item.difference_amount);
+    row.sales_amount = safeNumber(row.sales_amount) + safeNumber(item.sales_amount);
+    row.cost_amount = safeNumber(row.cost_amount) + safeNumber(item.cost_amount);
+    row.gross_profit = safeNumber(row.gross_profit) + safeNumber(item.gross_profit);
+    map.set(key, row);
+  });
+  return Array.from(map.values());
+}
+
+function invalidStoreStatus(status?: string) {
+  const value = String(status || '').toLowerCase();
+  return ['已关闭', '停用', 'closed', 'disabled', 'inactive'].includes(value) || ['已关闭', '停用'].includes(status || '');
+}
+
+type StoreSettlementDisplay = StoreSettlement & { store_status?: string };
+
 function sortFinanceRecords(data: FinanceRecord[]) {
   return [...data].sort((a, b) => (
     financePriority(a.status) - financePriority(b.status) ||
@@ -212,18 +243,44 @@ function BarChart({
   names: string[];
   series: Array<{ name: string; data: number[] }>;
 }) {
+  const chartHeight = id === 'store-settlement-chart' ? 430 : 340;
   useEffect(() => {
     const node = document.getElementById(id);
     if (!node) return;
     const chart = echarts.init(node);
+    const safeNames = names.map((name) => name || '-');
     chart.setOption({
       color: ['#1677ff', '#52c41a', '#faad14'],
-      tooltip: { trigger: 'axis' },
+      tooltip: {
+        trigger: 'axis',
+        formatter: (params: unknown) => {
+          const items = Array.isArray(params) ? params : [];
+          const title = String((items[0] as { axisValue?: string } | undefined)?.axisValue || '-');
+          const lines = items.map((item) => {
+            const point = item as { marker?: string; seriesName?: string; value?: number };
+            return `${point.marker || ''}${point.seriesName || '-'}：${money(safeNumber(point.value))}`;
+          });
+          return [title, ...lines].join('<br/>');
+        }
+      },
       legend: { top: 0 },
-      grid: { left: 58, right: 24, top: 42, bottom: 42 },
-      xAxis: { type: 'category', data: names, axisLabel: { interval: 0, rotate: names.length > 5 ? 20 : 0 } },
+      grid: { left: 58, right: 28, top: 48, bottom: id === 'store-settlement-chart' ? 92 : 58, containLabel: false },
+      xAxis: {
+        type: 'category',
+        data: safeNames,
+        axisLabel: {
+          interval: 0,
+          rotate: id === 'store-settlement-chart' ? 32 : safeNames.length > 5 ? 24 : 0,
+          formatter: (value: string) => (value.length > 10 ? `${value.slice(0, 10)}...` : value)
+        }
+      },
       yAxis: { type: 'value', axisLabel: { formatter: (value: number) => `${value / 1000}k` } },
-      series: series.map((item) => ({ ...item, type: 'bar', barMaxWidth: 28 }))
+      series: series.map((item) => ({
+        ...item,
+        data: safeNames.map((_, index) => safeNumber(item.data[index])),
+        type: 'bar',
+        barMaxWidth: 28
+      }))
     });
     const resize = () => chart.resize();
     window.addEventListener('resize', resize);
@@ -233,7 +290,7 @@ function BarChart({
     };
   }, [id, names, series]);
 
-  return names.length ? <div id={id} className="chart-box" /> : <Empty description="暂无图表数据" />;
+  return names.length ? <div id={id} className="chart-box" style={{ height: chartHeight }} /> : <Empty description="暂无图表数据" />;
 }
 
 export default function FinanceReconciliation() {
@@ -246,15 +303,19 @@ export default function FinanceReconciliation() {
   const [categoryProfit, setCategoryProfit] = useState<CategoryProfit[]>([]);
   const [promotionLoss, setPromotionLoss] = useState<PromotionLoss[]>([]);
   const [storeSettlement, setStoreSettlement] = useState<StoreSettlement[]>([]);
+  const [storeMeta, setStoreMeta] = useState<Store[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [recordStatus, setRecordStatus] = useState(ALL);
-  const [recordStore, setRecordStore] = useState(ALL);
+  const [recordStatus, setRecordStatus] = useState<string[]>([]);
+  const [recordStore, setRecordStore] = useState<string[]>([]);
   const [recordKeyword, setRecordKeyword] = useState('');
   const [recordDate, setRecordDate] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState(ALL);
-  const [paymentStatus, setPaymentStatus] = useState(ALL);
+  const [paymentStore, setPaymentStore] = useState<string[]>([]);
+  const [paymentMethod, setPaymentMethod] = useState<string[]>([]);
+  const [paymentStatus, setPaymentStatus] = useState<string[]>([]);
   const [paymentDate, setPaymentDate] = useState('');
+  const [financeTrendPeriod, setFinanceTrendPeriod] = useState<ChartPeriod>('day');
+  const [includeInvalidStores, setIncludeInvalidStores] = useState(false);
   const [selectedRecordKeys, setSelectedRecordKeys] = useState<Key[]>([]);
   const [detailRecord, setDetailRecord] = useState<FinanceRecord | null>(null);
   const [detailPayment, setDetailPayment] = useState<PaymentRecord | null>(null);
@@ -263,13 +324,14 @@ export default function FinanceReconciliation() {
     setLoading(true);
     setError('');
     try {
-      const [summaryData, recordData, paymentData, profitData, storeData, promotionData] = await Promise.all([
+      const [summaryData, recordData, paymentData, profitData, storeData, promotionData, storeMetaData] = await Promise.all([
         fetchFinanceSummary(),
         fetchFinanceRecords(),
         fetchPaymentRecords(),
         fetchProfitTrend(),
         fetchStoreSettlement(),
-        fetchPromotionLoss()
+        fetchPromotionLoss(),
+        fetchStores()
       ]);
       setSummary(summaryData || emptySummary);
       setRecords(sortFinanceRecords(recordData || []));
@@ -279,6 +341,7 @@ export default function FinanceReconciliation() {
       setCategoryProfit(profitData?.category_profit || []);
       setStoreSettlement(storeData || []);
       setPromotionLoss(promotionData || []);
+      setStoreMeta(storeMetaData || []);
     } catch {
       setError('财务对账与结算分析数据读取失败，请确认后端服务已启动并已重新 seed。');
       messageApi.error('财务数据读取失败');
@@ -291,12 +354,16 @@ export default function FinanceReconciliation() {
     loadData();
   }, []);
 
-  const stores = useMemo(() => Array.from(new Set(records.map((item) => item.store_name).filter(Boolean))), [records]);
+  const stores = useMemo(() => Array.from(new Set([...records.map((item) => item.store_name), ...payments.map((item) => item.store_name)].filter(Boolean))), [payments, records]);
+  const storeStatusByName = useMemo(
+    () => new Map(storeMeta.map((store) => [store.name, store.status || '正常营业'])),
+    [storeMeta]
+  );
   const filteredRecords = useMemo(
     () =>
       sortFinanceRecords(records).filter((item) => (
-        (recordStatus === ALL || item.status === recordStatus) &&
-        (recordStore === ALL || item.store_name === recordStore) &&
+        matchesMulti(recordStatus, item.status) &&
+        matchesMulti(recordStore, item.store_name) &&
         (!recordKeyword || item.order_no.includes(recordKeyword) || item.record_no.includes(recordKeyword)) &&
         (!recordDate || String(item.reconciliation_time).startsWith(recordDate))
       )),
@@ -305,15 +372,28 @@ export default function FinanceReconciliation() {
   const filteredPayments = useMemo(
     () =>
       sortPayments(payments).filter((item) => (
-        (paymentMethod === ALL || item.payment_method === paymentMethod) &&
-        (paymentStatus === ALL || item.payment_status === paymentStatus) &&
+        matchesMulti(paymentStore, item.store_name) &&
+        matchesMulti(paymentMethod, item.payment_method) &&
+        matchesMulti(paymentStatus, item.payment_status) &&
         (!paymentDate || String(item.payment_time).startsWith(paymentDate))
       )),
-    [paymentDate, paymentMethod, paymentStatus, payments]
+    [paymentDate, paymentMethod, paymentStatus, paymentStore, payments]
   );
   const pendingRecords = useMemo(
     () => sortFinanceRecords(records).filter((item) => canResolve(item) || item.status === '待对账' || safeNumber(item.difference_amount) !== 0),
     [records]
+  );
+  const trendByPeriod = useMemo(() => aggregateFinanceTrend(trend, financeTrendPeriod), [financeTrendPeriod, trend]);
+  const storeSettlementRows = useMemo<StoreSettlementDisplay[]>(
+    () => storeSettlement.map((item) => ({
+      ...item,
+      store_status: storeStatusByName.get(item.store_name) || '正常营业'
+    })),
+    [storeSettlement, storeStatusByName]
+  );
+  const visibleStoreSettlement = useMemo(
+    () => storeSettlementRows.filter((item) => includeInvalidStores || !invalidStoreStatus(item.store_status)),
+    [includeInvalidStores, storeSettlementRows]
   );
   const statusStats = useMemo(() => (
     ['已对账', '存在差异', '待对账', '已处理'].map((status) => ({
@@ -511,17 +591,23 @@ export default function FinanceReconciliation() {
     { title: '活动状态', dataIndex: 'status', render: (value: string) => <Tag color={statusColor(value)}>{value || '-'}</Tag> }
   ];
 
-  const storeColumns: ColumnsType<StoreSettlement> = [
-    { title: '门店名称', dataIndex: 'store_name' },
-    { title: '销售额', dataIndex: 'sales_amount', render: money },
-    { title: '订单数', dataIndex: 'order_count' },
-    { title: '客单价', dataIndex: 'average_order_value', render: money },
-    { title: '成本金额', dataIndex: 'cost_amount', render: money },
-    { title: '毛利额', dataIndex: 'gross_profit', render: money },
-    { title: '毛利率', dataIndex: 'gross_profit_rate', render: percent },
-    { title: '促销优惠金额', dataIndex: 'promotion_discount_amount', render: money },
-    { title: '对账差异金额', dataIndex: 'difference_amount', render: money },
-    { title: '结算状态', dataIndex: 'settlement_status', render: (value: string) => <Tag color={statusColor(value)}>{value || '-'}</Tag> }
+  const storeColumns: ColumnsType<StoreSettlementDisplay> = [
+    {
+      title: '门店名称',
+      dataIndex: 'store_name',
+      width: 180,
+      render: (value, record) => invalidStoreStatus(record.store_status) ? `${value || '-'}（${record.store_status}）` : value || '-'
+    },
+    { title: '门店状态', dataIndex: 'store_status', width: 110, render: (value: string) => <Tag color={invalidStoreStatus(value) ? 'red' : 'green'}>{value || '正常营业'}</Tag> },
+    { title: '销售额', dataIndex: 'sales_amount', width: 130, render: money },
+    { title: '订单数', dataIndex: 'order_count', width: 100 },
+    { title: '客单价', dataIndex: 'average_order_value', width: 130, render: money },
+    { title: '成本金额', dataIndex: 'cost_amount', width: 130, render: money },
+    { title: '毛利额', dataIndex: 'gross_profit', width: 130, render: money },
+    { title: '毛利率', dataIndex: 'gross_profit_rate', width: 110, render: percent },
+    { title: '促销优惠金额', dataIndex: 'promotion_discount_amount', width: 150, render: money },
+    { title: '对账差异金额', dataIndex: 'difference_amount', width: 130, render: money },
+    { title: '结算状态', dataIndex: 'settlement_status', width: 110, render: (value: string) => <Tag color={statusColor(value)}>{value || '-'}</Tag> }
   ];
 
   if (error) return <Alert type="error" message={error} showIcon />;
@@ -568,18 +654,18 @@ export default function FinanceReconciliation() {
                   </Row>
                   <Row gutter={[16, 16]} className="inventory-section">
                     <Col xs={24} lg={12}>
-                      <Card title="最近7日订单金额与支付金额趋势">
-                        <LineChart id="finance-order-payment-chart" data={trend} fields={[{ key: 'order_amount', name: '订单金额' }, { key: 'payment_amount', name: '支付金额' }]} />
+                      <Card title="订单金额与支付金额趋势" extra={<Segmented size="small" value={financeTrendPeriod} onChange={(value) => setFinanceTrendPeriod(value as ChartPeriod)} options={[...periodOptions]} />}>
+                        <LineChart id="finance-order-payment-chart" data={trendByPeriod} fields={[{ key: 'order_amount', name: '订单金额' }, { key: 'payment_amount', name: '支付金额' }]} />
                       </Card>
                     </Col>
                     <Col xs={24} lg={12}>
-                      <Card title="最近7日差异金额趋势">
-                        <LineChart id="finance-difference-chart" data={trend} fields={[{ key: 'difference_amount', name: '差异金额' }]} />
+                      <Card title="差异金额趋势">
+                        <LineChart id="finance-difference-chart" data={trendByPeriod} fields={[{ key: 'difference_amount', name: '差异金额' }]} />
                       </Card>
                     </Col>
                   </Row>
                   <Card title="待处理差异列表" className="inventory-section">
-                    <Table rowKey="id" loading={loading} columns={recordColumns} dataSource={pendingRecords} scroll={{ x: 1700 }} pagination={{ pageSize: 6 }} />
+                  <ResizableTable rowKey="id" loading={loading} columns={recordColumns} dataSource={pendingRecords} scroll={{ x: 1700 }} pagination={{ pageSize: 6 }} />
                   </Card>
                 </>
               )
@@ -605,12 +691,12 @@ export default function FinanceReconciliation() {
                       <Button disabled={!selectedResolveCount}>批量标记已处理</Button>
                     </Popconfirm>
                     <Input placeholder="日期 YYYY-MM-DD" value={recordDate} onChange={(event) => setRecordDate(event.target.value)} style={{ width: 160 }} />
-                    <Select value={recordStore} onChange={setRecordStore} options={[ALL, ...stores].map((value) => ({ value, label: value }))} style={{ width: 180 }} />
-                    <Select value={recordStatus} onChange={setRecordStatus} options={[ALL, '已对账', '存在差异', '待处理', '待对账', '已处理', '已关闭'].map((value) => ({ value, label: value }))} style={{ width: 150 }} />
+                    <Select mode="multiple" allowClear showSearch maxTagCount="responsive" placeholder="门店" value={recordStore} onChange={setRecordStore} options={stores.map((value) => ({ value, label: value }))} style={{ width: 220 }} />
+                    <Select mode="multiple" allowClear maxTagCount="responsive" placeholder="对账状态" value={recordStatus} onChange={setRecordStatus} options={['待对账', '已平账', '已对账', '存在差异', '待处理', '已处理', '已关闭'].map((value) => ({ value, label: value }))} style={{ width: 220 }} />
                     <Input.Search placeholder="订单编号 / 财务记录号" allowClear value={recordKeyword} onChange={(event) => setRecordKeyword(event.target.value)} style={{ width: 240 }} />
-                    <Button onClick={() => { setRecordDate(''); setRecordStore(ALL); setRecordStatus(ALL); setRecordKeyword(''); setSelectedRecordKeys([]); }}>重置</Button>
+                    <Button onClick={() => { setRecordDate(''); setRecordStore([]); setRecordStatus([]); setRecordKeyword(''); setSelectedRecordKeys([]); }}>重置</Button>
                   </Space>
-                  <Table
+                  <ResizableTable
                     rowKey="id"
                     loading={loading}
                     rowSelection={recordRowSelection}
@@ -628,12 +714,13 @@ export default function FinanceReconciliation() {
               children: (
                 <>
                   <Space className="inventory-toolbar" wrap>
-                    <Select value={paymentMethod} onChange={setPaymentMethod} options={[ALL, '微信支付', '支付宝', '银联卡', '现金'].map((value) => ({ value, label: value }))} style={{ width: 150 }} />
-                    <Select value={paymentStatus} onChange={setPaymentStatus} options={[ALL, '成功', '失败', '已退款', '待确认'].map((value) => ({ value, label: value }))} style={{ width: 150 }} />
+                    <Select mode="multiple" allowClear showSearch maxTagCount="responsive" placeholder="门店" value={paymentStore} onChange={setPaymentStore} options={stores.map((value) => ({ value, label: value }))} style={{ width: 220 }} />
+                    <Select mode="multiple" allowClear maxTagCount="responsive" placeholder="支付方式" value={paymentMethod} onChange={setPaymentMethod} options={['微信支付', '微信', '支付宝', '银联卡', '现金'].map((value) => ({ value, label: value }))} style={{ width: 200 }} />
+                    <Select mode="multiple" allowClear maxTagCount="responsive" placeholder="支付状态" value={paymentStatus} onChange={setPaymentStatus} options={['成功', '失败', '已退款', '待确认'].map((value) => ({ value, label: value }))} style={{ width: 200 }} />
                     <Input placeholder="日期 YYYY-MM-DD" value={paymentDate} onChange={(event) => setPaymentDate(event.target.value)} style={{ width: 160 }} />
-                    <Button onClick={() => { setPaymentMethod(ALL); setPaymentStatus(ALL); setPaymentDate(''); }}>重置</Button>
+                    <Button onClick={() => { setPaymentStore([]); setPaymentMethod([]); setPaymentStatus([]); setPaymentDate(''); }}>重置</Button>
                   </Space>
-                  <Table rowKey="id" loading={loading} columns={paymentColumns} dataSource={filteredPayments} scroll={{ x: 1450 }} pagination={{ pageSize: 8 }} />
+                  <ResizableTable rowKey="id" loading={loading} columns={paymentColumns} dataSource={filteredPayments} scroll={{ x: 1450 }} pagination={{ pageSize: 8 }} />
                 </>
               )
             },
@@ -642,12 +729,12 @@ export default function FinanceReconciliation() {
               label: '毛利趋势',
               children: (
                 <>
-                  <Card title="最近7日销售额、成本金额、毛利额趋势">
-                    <LineChart id="finance-profit-trend-chart" data={trend} fields={[{ key: 'sales_amount', name: '销售额' }, { key: 'cost_amount', name: '成本金额' }, { key: 'gross_profit', name: '毛利额' }]} />
+                  <Card title="销售额、成本金额、毛利额趋势" extra={<Segmented size="small" value={financeTrendPeriod} onChange={(value) => setFinanceTrendPeriod(value as ChartPeriod)} options={[...periodOptions]} />}>
+                    <LineChart id="finance-profit-trend-chart" data={trendByPeriod} fields={[{ key: 'sales_amount', name: '销售额' }, { key: 'cost_amount', name: '成本金额' }, { key: 'gross_profit', name: '毛利额' }]} />
                   </Card>
                   <Row gutter={[16, 16]} className="inventory-section">
-                    <Col xs={24} lg={14}><Card title="商品毛利排行表"><Table rowKey="rank" columns={productColumns} dataSource={productRank} pagination={{ pageSize: 6 }} /></Card></Col>
-                    <Col xs={24} lg={10}><Card title="品类毛利分析表"><Table rowKey="category" columns={categoryColumns} dataSource={categoryProfit} pagination={false} /></Card></Col>
+                    <Col xs={24} lg={14}><Card title="商品毛利排行表"><ResizableTable rowKey="rank" columns={productColumns} dataSource={productRank} pagination={{ pageSize: 6 }} /></Card></Col>
+                    <Col xs={24} lg={10}><Card title="品类毛利分析表"><ResizableTable rowKey="category" columns={categoryColumns} dataSource={categoryProfit} pagination={false} /></Card></Col>
                   </Row>
                 </>
               )
@@ -661,7 +748,7 @@ export default function FinanceReconciliation() {
                     <Col xs={24} lg={12}><Card title="促销优惠金额"><BarChart id="promotion-discount-chart" names={promotionLoss.map((item) => item.promotion_name || '-')} series={[{ name: '优惠金额', data: promotionLoss.map((item) => safeNumber(item.discount_amount)) }]} /></Card></Col>
                     <Col xs={24} lg={12}><Card title="促销带动销售额"><BarChart id="promotion-sales-chart" names={promotionLoss.map((item) => item.promotion_name || '-')} series={[{ name: '实收金额', data: promotionLoss.map((item) => safeNumber(item.paid_amount)) }]} /></Card></Col>
                   </Row>
-                  <Card title="促销损益分析表" className="inventory-section"><Table rowKey="promotion_id" columns={promotionColumns} dataSource={promotionLoss} scroll={{ x: 1300 }} /></Card>
+                  <Card title="促销损益分析表" className="inventory-section"><ResizableTable rowKey="promotion_id" columns={promotionColumns} dataSource={promotionLoss} scroll={{ x: 1300 }} /></Card>
                 </>
               )
             },
@@ -670,10 +757,22 @@ export default function FinanceReconciliation() {
               label: '门店结算',
               children: (
                 <>
-                  <Card title="门店销售额与毛利额对比">
-                    <BarChart id="store-settlement-chart" names={storeSettlement.map((item) => item.store_name || '-')} series={[{ name: '销售额', data: storeSettlement.map((item) => safeNumber(item.sales_amount)) }, { name: '毛利额', data: storeSettlement.map((item) => safeNumber(item.gross_profit)) }]} />
+                  <Card
+                    title="门店销售额与毛利额对比"
+                    extra={(
+                      <Space wrap>
+                        <span>包含无效门店</span>
+                        <Switch size="small" checked={includeInvalidStores} onChange={setIncludeInvalidStores} />
+                      </Space>
+                    )}
+                  >
+                    <BarChart
+                      id="store-settlement-chart"
+                      names={visibleStoreSettlement.map((item) => invalidStoreStatus(item.store_status) ? `${item.store_name || '-'}（${item.store_status}）` : item.store_name || '-')}
+                      series={[{ name: '销售额', data: visibleStoreSettlement.map((item) => safeNumber(item.sales_amount)) }, { name: '毛利额', data: visibleStoreSettlement.map((item) => safeNumber(item.gross_profit)) }]}
+                    />
                   </Card>
-                  <Card title="门店结算分析表" className="inventory-section"><Table rowKey="store_id" columns={storeColumns} dataSource={storeSettlement} scroll={{ x: 1300 }} /></Card>
+                  <Card title="门店结算分析表" className="inventory-section"><ResizableTable rowKey={(record) => `${record.store_id}-${record.store_name}`} columns={storeColumns} dataSource={visibleStoreSettlement} scroll={{ x: 1430 }} /></Card>
                 </>
               )
             }

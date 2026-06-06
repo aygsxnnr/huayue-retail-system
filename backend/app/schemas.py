@@ -45,6 +45,7 @@ class ProductOut(BaseModel):
     status: str
     launch_date: date
     lifecycle_status: str
+    sale_price: float = 0
     list_price: float = 0
     cost_price: float = 0
 
@@ -58,6 +59,8 @@ class ProductCreate(BaseModel):
     status: str = "在售"
     launch_date: date | None = None
     lifecycle_status: str = "新品"
+    sale_price: float = Field(default=0, ge=0)
+    cost_price: float = Field(default=0, ge=0)
 
 
 class ProductUpdate(BaseModel):
@@ -69,6 +72,8 @@ class ProductUpdate(BaseModel):
     status: str | None = None
     launch_date: date | None = None
     lifecycle_status: str | None = None
+    sale_price: float | None = Field(default=None, ge=0)
+    cost_price: float | None = Field(default=None, ge=0)
 
 
 class StatusUpdate(BaseModel):
@@ -128,6 +133,7 @@ class SKUCreate(BaseModel):
     list_price: float | None = Field(default=None, gt=0)
     sale_price: float | None = Field(default=None, gt=0)
     price: float | None = Field(default=None, gt=0)
+    cost_price: float | None = Field(default=None, ge=0)
     status: str = "启用"
 
 
@@ -140,6 +146,7 @@ class SKUUpdate(BaseModel):
     list_price: float | None = Field(default=None, gt=0)
     sale_price: float | None = Field(default=None, gt=0)
     price: float | None = Field(default=None, gt=0)
+    cost_price: float | None = Field(default=None, ge=0)
     status: str | None = None
 
 
@@ -200,11 +207,25 @@ class CouponOut(BaseModel):
     used_count: int
     status: str
     created_at: datetime
+    per_member_limit: int | None = None
+    per_order_use_limit: int | None = None
+    stackable: bool = False
+    total_issue_limit: int | None = None
+    total_redeem_limit: int | None = None
+    applicable_category_ids: str = ""
+    applicable_product_ids: str = ""
+    applicable_seasons: str = ""
+    applicable_member_levels: str = ""
+    applicable_member_groups: str = ""
+    applicable_store_ids: str = ""
+    target_tags: str = ""
+    issue_mode: str = "手动发放"
+    auto_issue_enabled: bool = False
     promotion: PromotionOut | None = None
 
 
 class CouponCreate(BaseModel):
-    code: str
+    code: str | None = None
     name: str
     coupon_type: str
     promotion_id: int | None = None
@@ -217,6 +238,20 @@ class CouponCreate(BaseModel):
     issued_count: int = Field(default=0, ge=0)
     used_count: int = Field(default=0, ge=0)
     status: str = "可用"
+    per_member_limit: int | None = Field(default=None, ge=0)
+    per_order_use_limit: int | None = Field(default=None, ge=0)
+    stackable: bool = False
+    total_issue_limit: int | None = Field(default=None, ge=0)
+    total_redeem_limit: int | None = Field(default=None, ge=0)
+    applicable_category_ids: str = ""
+    applicable_product_ids: str = ""
+    applicable_seasons: str = ""
+    applicable_member_levels: str = ""
+    applicable_member_groups: str = ""
+    applicable_store_ids: str = ""
+    target_tags: str = ""
+    issue_mode: str = "手动发放"
+    auto_issue_enabled: bool = False
 
 
 class CouponUpdate(BaseModel):
@@ -233,6 +268,87 @@ class CouponUpdate(BaseModel):
     issued_count: int | None = Field(default=None, ge=0)
     used_count: int | None = Field(default=None, ge=0)
     status: str | None = None
+    per_member_limit: int | None = Field(default=None, ge=0)
+    per_order_use_limit: int | None = Field(default=None, ge=0)
+    stackable: bool | None = None
+    total_issue_limit: int | None = Field(default=None, ge=0)
+    total_redeem_limit: int | None = Field(default=None, ge=0)
+    applicable_category_ids: str | None = None
+    applicable_product_ids: str | None = None
+    applicable_seasons: str | None = None
+    applicable_member_levels: str | None = None
+    applicable_member_groups: str | None = None
+    applicable_store_ids: str | None = None
+    target_tags: str | None = None
+    issue_mode: str | None = None
+    auto_issue_enabled: bool | None = None
+
+
+class CouponMatchConditions(BaseModel):
+    member_levels: list[str] = Field(default_factory=list)
+    member_groups: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    store_ids: list[int] = Field(default_factory=list)
+    member_statuses: list[str] = Field(default_factory=list)
+    account_statuses: list[str] = Field(default_factory=list)
+    lifecycle_statuses: list[str] = Field(default_factory=list)
+    recent_purchase_start: date | None = None
+    recent_purchase_end: date | None = None
+    min_total_spent: float | None = Field(default=None, ge=0)
+    max_total_spent: float | None = Field(default=None, ge=0)
+    min_points: int | None = Field(default=None, ge=0)
+    max_points: int | None = Field(default=None, ge=0)
+    # Backward compatibility only. These are normalized to lifecycle_statuses in crud.
+    is_new_member: bool | None = None
+    is_sleeping_member: bool | None = None
+    is_churn_risk: bool | None = None
+
+
+class CouponMatchRequest(BaseModel):
+    extra_member_ids: list[int] = Field(default_factory=list)
+    exclude_member_ids: list[int] = Field(default_factory=list)
+    conditions: CouponMatchConditions = Field(default_factory=CouponMatchConditions)
+
+
+class MatchedCouponMemberOut(BaseModel):
+    id: int
+    name: str
+    phone: str
+    level: str
+    member_group: str = "-"
+    registered_store: str = "-"
+    registered_store_text: str = "-"
+    registered_store_names: list[str] = Field(default_factory=list)
+    account_status: str = "-"
+    lifecycle_status: str = "-"
+    last_purchase_at: datetime | None = None
+    match_reason: str = "-"
+
+
+class CouponCodeOut(BaseModel):
+    code: str
+
+
+class CouponMatchOut(BaseModel):
+    matched_count: int
+    matched_members: list[MatchedCouponMemberOut]
+
+
+class CouponIssueRequest(BaseModel):
+    member_ids: list[int] = Field(min_length=1)
+    channels: list[str] = Field(min_length=1)
+    remark: str = "优惠券一键匹配发放"
+
+
+class CouponIssueFailedItem(BaseModel):
+    member_id: int
+    reason: str
+
+
+class CouponIssueOut(BaseModel):
+    created_count: int
+    skipped_count: int
+    failed_items: list[CouponIssueFailedItem] = Field(default_factory=list)
 
 
 class MemberCreate(BaseModel):
@@ -388,6 +504,7 @@ class MarketingEffectOut(BaseModel):
 class RepurchaseAnalysisOut(BaseModel):
     repurchase_ranking: list[RepurchaseRankOut]
     level_distribution: list[LevelDistributionOut]
+    lifecycle_distribution: list[LevelDistributionOut] = Field(default_factory=list)
     marketing_effects: list[MarketingEffectOut]
 
 
@@ -503,8 +620,10 @@ class SalesOrderItemOut(BaseModel):
     sku_id: int
     quantity: int
     unit_price: float
+    unit_cost: float = 0
     discount_amount: float
     subtotal: float
+    cost_amount: float = 0
     sku: SKUOut | None = None
 
 

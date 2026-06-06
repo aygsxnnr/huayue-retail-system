@@ -8,7 +8,12 @@ from .member_service import calculate_member_sales_ratio
 def get_dashboard(db: Session) -> dict:
     sales_amount = db.query(func.coalesce(func.sum(models.SalesOrder.paid_amount), 0)).scalar()
     order_count = db.query(models.SalesOrder).count()
-    gross_profit = db.query(func.coalesce(func.sum(models.FinanceRecord.gross_profit), 0)).scalar()
+    orders = (
+        db.query(models.SalesOrder)
+        .options(joinedload(models.SalesOrder.items).joinedload(models.SalesOrderItem.sku).joinedload(models.SKU.product))
+        .all()
+    )
+    gross_profit = sum(float(order.paid_amount or 0) - sum(_order_item_cost(item) for item in order.items) for order in orders)
     inventory_quantity = db.query(func.coalesce(func.sum(models.Inventory.quantity), 0)).scalar()
     sold_quantity = db.query(func.coalesce(func.sum(models.SalesOrderItem.quantity), 0)).scalar()
     low_stock_items = crud.list_low_stock(db)
@@ -54,4 +59,23 @@ def get_dashboard(db: Session) -> dict:
             .limit(8)
             .all()
         ),
-    }
+}
+
+
+def _sku_cost_price(sku: models.SKU | None) -> float:
+    if not sku:
+        return 0
+    if sku.cost_price is not None and sku.cost_price > 0:
+        return float(sku.cost_price)
+    product = sku.product
+    if product and product.cost_price is not None and product.cost_price > 0:
+        return float(product.cost_price)
+    return 0
+
+
+def _order_item_cost(item: models.SalesOrderItem) -> float:
+    if item.cost_amount is not None and item.cost_amount > 0:
+        return float(item.cost_amount)
+    if item.unit_cost is not None and item.unit_cost > 0:
+        return float(item.unit_cost) * item.quantity
+    return _sku_cost_price(item.sku) * item.quantity

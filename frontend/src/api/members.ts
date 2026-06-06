@@ -137,6 +137,7 @@ export interface MarketingEffect {
 export interface RepurchaseAnalysis {
   repurchase_ranking: RepurchaseRank[];
   level_distribution: LevelDistribution[];
+  lifecycle_distribution: LevelDistribution[];
   marketing_effects: MarketingEffect[];
 }
 

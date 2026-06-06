@@ -12,6 +12,7 @@ export interface Product {
   status: string;
   launch_date: string;
   lifecycle_status: string;
+  sale_price: number;
   list_price: number;
   cost_price: number;
 }
@@ -79,7 +80,47 @@ export interface Coupon {
   used_count: number;
   status: string;
   created_at: string;
+  per_member_limit?: number | null;
+  per_order_use_limit?: number | null;
+  stackable?: boolean;
+  total_issue_limit?: number | null;
+  total_redeem_limit?: number | null;
+  applicable_category_ids?: string;
+  applicable_product_ids?: string;
+  applicable_seasons?: string;
+  applicable_member_levels?: string;
+  applicable_member_groups?: string;
+  applicable_store_ids?: string;
+  target_tags?: string;
+  issue_mode?: string;
+  auto_issue_enabled?: boolean;
   promotion?: Promotion | null;
+}
+
+export interface CouponMatchedMember {
+  id: number;
+  name: string;
+  phone: string;
+  level: string;
+  member_group: string;
+  registered_store: string;
+  registered_store_text?: string;
+  registered_store_names?: string[];
+  account_status?: string;
+  lifecycle_status?: string;
+  last_purchase_at?: string | null;
+  match_reason: string;
+}
+
+export interface CouponMatchResult {
+  matched_count: number;
+  matched_members: CouponMatchedMember[];
+}
+
+export interface CouponIssueResult {
+  created_count: number;
+  skipped_count: number;
+  failed_items: Array<{ member_id: number; reason: string }>;
 }
 
 export interface SalesOrderItem {
@@ -87,8 +128,10 @@ export interface SalesOrderItem {
   sku_id: number;
   quantity: number;
   unit_price: number;
+  unit_cost?: number;
   discount_amount: number;
   subtotal: number;
+  cost_amount?: number;
   sku?: SKU;
 }
 
@@ -107,7 +150,7 @@ export interface SalesOrder {
   items: SalesOrderItem[];
 }
 
-export type ProductPayload = Omit<Product, 'id' | 'list_price' | 'cost_price' | 'code'> & { code?: string };
+export type ProductPayload = Omit<Product, 'id' | 'list_price' | 'code'> & { code?: string };
 
 export interface SKUPayload {
   product_id?: number;
@@ -119,6 +162,7 @@ export interface SKUPayload {
   list_price?: number;
   sale_price?: number;
   price?: number;
+  cost_price?: number | null;
   status?: string;
 }
 
@@ -208,6 +252,44 @@ export async function updateCoupon(id: number, payload: Partial<CouponPayload>) 
 
 export async function updateCouponStatus(id: number, status: string) {
   const { data } = await request.put<Coupon>(`/coupons/${id}/status`, { status });
+  return data;
+}
+
+export async function matchCouponMembers(
+  id: number,
+  payload: {
+    extra_member_ids?: number[];
+    exclude_member_ids?: number[];
+    conditions?: {
+      member_levels?: string[];
+      member_groups?: string[];
+      tags?: string[];
+      store_ids?: number[];
+      account_statuses?: string[];
+      lifecycle_statuses?: string[];
+      recent_purchase_start?: string | null;
+      recent_purchase_end?: string | null;
+      min_total_spent?: number | null;
+      max_total_spent?: number | null;
+      min_points?: number | null;
+      max_points?: number | null;
+    };
+  }
+) {
+  const { data } = await request.post<CouponMatchResult>(`/coupons/${id}/match-members`, payload);
+  return data;
+}
+
+export async function generateCouponCode() {
+  const { data } = await request.get<{ code: string }>('/coupons/generate-code');
+  return data;
+}
+
+export async function issueCouponToMembers(
+  id: number,
+  payload: { member_ids: number[]; channels: string[]; remark?: string }
+) {
+  const { data } = await request.post<CouponIssueResult>(`/coupons/${id}/issue-to-members`, payload);
   return data;
 }
 

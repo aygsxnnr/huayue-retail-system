@@ -8,7 +8,7 @@ import {
   Row,
   Select,
   Space,
-  Table,
+  Switch,
   Tabs,
   Tag,
   Typography,
@@ -18,6 +18,7 @@ import type { ColumnsType } from 'antd/es/table';
 import * as echarts from 'echarts';
 import dayjs from 'dayjs';
 import MetricCard from '../components/MetricCard';
+import ResizableTable from '../components/ResizableTable';
 import { fetchProducts, type Product } from '../api/products';
 import { fetchStores, type Store } from '../api/pos';
 import {
@@ -86,6 +87,11 @@ function statusColor(status: string) {
   if (['低库存', '待补货', '待处理'].includes(status)) return 'orange';
   if (['缺货预警', '存在差异', '已关闭', '失败', '已停用', '已结束'].includes(status)) return 'red';
   return 'default';
+}
+
+function invalidStoreStatus(status?: string) {
+  const value = String(status || '').toLowerCase();
+  return ['已关闭', '停用', 'closed', 'disabled', 'inactive'].includes(value) || ['已关闭', '停用'].includes(status || '');
 }
 
 function defaultDateRange() {
@@ -164,13 +170,16 @@ function PieChart({ id, data }: { id: string; data: Array<{ status: string; coun
     chart.setOption({
       color: ['#52c41a', '#faad14', '#ff4d4f', '#1677ff', '#13c2c2'],
       tooltip: { trigger: 'item' },
-      legend: { bottom: 0 },
+      legend: { type: 'scroll', bottom: 0 },
       series: [
         {
           name: '状态分布',
           type: 'pie',
-          radius: ['42%', '68%'],
-          center: ['50%', '44%'],
+          radius: ['38%', '62%'],
+          center: ['50%', '40%'],
+          avoidLabelOverlap: true,
+          label: { show: false },
+          emphasis: { label: { show: true, formatter: '{b}: {d}%' } },
           data: data.map((item) => ({ name: item.status, value: safeNumber(item.count) }))
         }
       ]
@@ -183,7 +192,7 @@ function PieChart({ id, data }: { id: string; data: Array<{ status: string; coun
     };
   }, [data, id]);
 
-  return data.length ? <div id={id} className="chart-box" /> : <Empty description="暂无图表数据" />;
+  return data.length ? <div id={id} className="chart-box" style={{ height: 340 }} /> : <Empty description="暂无图表数据" />;
 }
 
 function downloadCsv(filename: string, sections: Array<{ title: string; rows: Record<string, unknown>[] }>) {
@@ -216,6 +225,7 @@ export default function ReportsCenter() {
   const [period, setPeriod] = useState('day');
   const [stores, setStores] = useState<Store[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
+  const [includeInvalidStores, setIncludeInvalidStores] = useState(false);
   const [summary, setSummary] = useState<ReportSummary>(emptySummary);
   const [trend, setTrend] = useState<SalesTrendPoint[]>([]);
   const [storePerformance, setStorePerformance] = useState<StorePerformance[]>([]);
@@ -237,6 +247,12 @@ export default function ReportsCenter() {
   const categories = useMemo(
     () => Array.from(new Set(products.map((item) => item.category).filter(Boolean))).sort(),
     [products]
+  );
+
+  const storeStatusMap = useMemo(() => new Map(stores.map((store) => [store.id, store.status || '正常营业'])), [stores]);
+  const filteredStorePerformance = useMemo(
+    () => storePerformance.filter((item) => includeInvalidStores || !invalidStoreStatus(storeStatusMap.get(item.store_id))),
+    [includeInvalidStores, storePerformance, storeStatusMap]
   );
 
   const loadMeta = async () => {
@@ -328,7 +344,16 @@ export default function ReportsCenter() {
 
   const storeColumns: ColumnsType<StorePerformance> = [
     { title: '排名', dataIndex: 'rank', width: 80, render: (value) => <Tag color="blue">第{safeNumber(value)}名</Tag> },
-    { title: '门店名称', dataIndex: 'store_name', width: 180, render: text },
+    {
+      title: '门店名称',
+      dataIndex: 'store_name',
+      width: 200,
+      render: (value, record) => {
+        const status = storeStatusMap.get(record.store_id);
+        return invalidStoreStatus(status) ? `${text(value)}（${status}）` : text(value);
+      }
+    },
+    { title: '门店状态', width: 110, render: (_, record) => <Tag color={invalidStoreStatus(storeStatusMap.get(record.store_id)) ? 'red' : 'green'}>{storeStatusMap.get(record.store_id) || '正常营业'}</Tag> },
     { title: '销售额', dataIndex: 'sales_amount', width: 120, render: money, sorter: (a, b) => safeNumber(a.sales_amount) - safeNumber(b.sales_amount) },
     { title: '订单数', dataIndex: 'order_count', width: 100, sorter: (a, b) => safeNumber(a.order_count) - safeNumber(b.order_count) },
     { title: '客单价', dataIndex: 'average_order_value', width: 120, render: money },
@@ -458,13 +483,16 @@ export default function ReportsCenter() {
                     </Card>
                   </Col>
                   <Col xs={24} lg={10}>
-                    <Card title="门店销售额与毛利额对比">
+                    <Card title="门店销售额与毛利额对比" extra={<Space><span>包含无效门店</span><Switch size="small" checked={includeInvalidStores} onChange={setIncludeInvalidStores} /></Space>}>
                       <BarChart
                         id="reports-store-overview"
-                        names={storePerformance.map((item) => item.store_name || '-')}
+                        names={filteredStorePerformance.map((item) => {
+                          const status = storeStatusMap.get(item.store_id);
+                          return invalidStoreStatus(status) ? `${item.store_name || '-'}（${status}）` : item.store_name || '-';
+                        })}
                         series={[
-                          { name: '销售额', data: storePerformance.map((item) => safeNumber(item.sales_amount)) },
-                          { name: '毛利额', data: storePerformance.map((item) => safeNumber(item.gross_profit)) }
+                          { name: '销售额', data: filteredStorePerformance.map((item) => safeNumber(item.sales_amount)) },
+                          { name: '毛利额', data: filteredStorePerformance.map((item) => safeNumber(item.gross_profit)) }
                         ]}
                       />
                     </Card>
@@ -482,18 +510,21 @@ export default function ReportsCenter() {
               label: '门店排行',
               children: (
                 <>
-                  <Card title="门店销售额与毛利额对比">
+                  <Card title="门店销售额与毛利额对比" extra={<Space><span>包含无效门店</span><Switch size="small" checked={includeInvalidStores} onChange={setIncludeInvalidStores} /></Space>}>
                     <BarChart
                       id="reports-store-rank-chart"
-                      names={storePerformance.map((item) => item.store_name || '-')}
+                      names={filteredStorePerformance.map((item) => {
+                        const status = storeStatusMap.get(item.store_id);
+                        return invalidStoreStatus(status) ? `${item.store_name || '-'}（${status}）` : item.store_name || '-';
+                      })}
                       series={[
-                        { name: '销售额', data: storePerformance.map((item) => safeNumber(item.sales_amount)) },
-                        { name: '毛利额', data: storePerformance.map((item) => safeNumber(item.gross_profit)) }
+                        { name: '销售额', data: filteredStorePerformance.map((item) => safeNumber(item.sales_amount)) },
+                        { name: '毛利额', data: filteredStorePerformance.map((item) => safeNumber(item.gross_profit)) }
                       ]}
                     />
                   </Card>
                   <Card title="门店经营表现" className="inventory-section">
-                    <Table rowKey="store_id" loading={loading} columns={storeColumns} dataSource={storePerformance} scroll={{ x: 1060 }} pagination={{ pageSize: 8 }} />
+                    <ResizableTable rowKey="store_id" loading={loading} columns={storeColumns} dataSource={filteredStorePerformance} scroll={{ x: 1060 }} pagination={{ pageSize: 8 }} />
                   </Card>
                 </>
               )
@@ -516,8 +547,8 @@ export default function ReportsCenter() {
                     </Col>
                   </Row>
                   <Row gutter={[16, 16]} className="inventory-section">
-                    <Col xs={24} lg={9}><Card title="品类分析表"><Table rowKey="category" loading={loading} columns={categoryColumns} dataSource={categoryAnalysis} pagination={false} /></Card></Col>
-                    <Col xs={24} lg={15}><Card title="商品销售排行表"><Table rowKey="sku_code" loading={loading} columns={productColumns} dataSource={productRanking} scroll={{ x: 1100 }} pagination={{ pageSize: 8 }} /></Card></Col>
+                    <Col xs={24} lg={9}><Card title="品类分析表"><ResizableTable rowKey="category" loading={loading} columns={categoryColumns} dataSource={categoryAnalysis} pagination={false} /></Card></Col>
+                    <Col xs={24} lg={15}><Card title="商品销售排行表"><ResizableTable rowKey="sku_code" loading={loading} columns={productColumns} dataSource={productRanking} scroll={{ x: 1100 }} pagination={{ pageSize: 8 }} /></Card></Col>
                   </Row>
                 </>
               )
@@ -527,12 +558,12 @@ export default function ReportsCenter() {
               label: '库存健康分析',
               children: (
                 <Row gutter={[16, 16]}>
-                  <Col xs={24} lg={8}>
+                  <Col xs={24} lg={10}>
                     <Card title="库存状态分布"><PieChart id="reports-inventory-pie" data={inventoryHealth.distribution} /></Card>
                   </Col>
-                  <Col xs={24} lg={16}>
+                  <Col xs={24} lg={14}>
                     <Card title="缺货 / 低库存 SKU">
-                      <Table rowKey="id" loading={loading} columns={inventoryColumns} dataSource={inventoryHealth.alerts} scroll={{ x: 1070 }} pagination={{ pageSize: 8 }} />
+                      <ResizableTable rowKey="id" loading={loading} columns={inventoryColumns} dataSource={inventoryHealth.alerts} scroll={{ x: 1070 }} pagination={{ pageSize: 8 }} />
                     </Card>
                   </Col>
                 </Row>
@@ -556,7 +587,7 @@ export default function ReportsCenter() {
                     </Col>
                   </Row>
                   <Card title="促销活动效果表" className="inventory-section">
-                    <Table rowKey="promotion_id" loading={loading} columns={promotionColumns} dataSource={promotionEffect} scroll={{ x: 1200 }} pagination={{ pageSize: 8 }} />
+                    <ResizableTable rowKey="promotion_id" loading={loading} columns={promotionColumns} dataSource={promotionEffect} scroll={{ x: 1200 }} pagination={{ pageSize: 8 }} />
                   </Card>
                 </>
               )
@@ -571,7 +602,7 @@ export default function ReportsCenter() {
                   </Col>
                   <Col xs={24} lg={16}>
                     <Card title="财务概览表">
-                      <Table rowKey="id" loading={loading} columns={financeColumns} dataSource={financeOverview.records} scroll={{ x: 1070 }} pagination={{ pageSize: 8 }} />
+                      <ResizableTable rowKey="id" loading={loading} columns={financeColumns} dataSource={financeOverview.records} scroll={{ x: 1070 }} pagination={{ pageSize: 8 }} />
                     </Card>
                   </Col>
                 </Row>

@@ -1,11 +1,14 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .database import Base, engine, ensure_member_schema
+from .database import Base, engine, ensure_coupon_schema, ensure_member_schema, ensure_product_schema, ensure_sales_order_item_schema
 from .routers import coupons, dashboard, finance, inventory, members, products, promotions, reports, sales, stores
 
 Base.metadata.create_all(bind=engine)
 ensure_member_schema()
+ensure_coupon_schema()
+ensure_product_schema()
+ensure_sales_order_item_schema()
 
 app = FastAPI(
     title="华悦零售门店数字化管理系统 API",

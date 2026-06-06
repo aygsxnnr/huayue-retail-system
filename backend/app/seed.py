@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta
+import json
 
 from .database import Base, SessionLocal, engine
 from .models import (
@@ -54,6 +55,7 @@ def seed() -> None:
             ("AC03003", "极简银色项链", "配饰", "四季", "新品", "在售", 8),
             ("AC03004", "复古针织围巾", "配饰", "秋冬", "下架", "下架", 260),
         ]
+        base_prices = [199, 259, 229, 189, 499, 329, 99, 239, 279, 299, 359, 169, 219, 129, 159]
         products = [
             Product(
                 code=code,
@@ -63,13 +65,14 @@ def seed() -> None:
                 lifecycle_status=lifecycle,
                 status=status,
                 launch_date=date.today() - timedelta(days=days_ago),
+                sale_price=base_prices[index],
+                cost_price=round(base_prices[index] * 0.48, 2),
             )
-            for code, name, category, season, lifecycle, status, days_ago in product_specs
+            for index, (code, name, category, season, lifecycle, status, days_ago) in enumerate(product_specs)
         ]
         db.add_all(products)
         db.flush()
 
-        base_prices = [199, 259, 229, 189, 499, 329, 99, 239, 279, 299, 359, 169, 219, 129, 159]
         colors = ["米白", "黑色", "雾霾蓝", "卡其", "灰色", "棕色", "浅粉", "墨绿", "多色拼接", "设计师定制色"]
         sizes = ["S", "M", "L", "均码", "38", "40", "26", "30", "42", "XXXL"]
         skus = []
@@ -169,6 +172,21 @@ def seed() -> None:
             Coupon(code="CP20260007", name="配饰组合85折券", coupon_type="折扣券", promotion_id=promotions[4].id, discount_rate=0.85, threshold_amount=0, valid_start=date.today() - timedelta(days=2), valid_end=date.today() + timedelta(days=5), target_group="配饰偏好会员", issued_count=260, used_count=19, status="已停用"),
             Coupon(code="CP20260008", name="新客首单满199减50", coupon_type="会员券", promotion_id=None, discount_amount=50, threshold_amount=199, valid_start=date.today() - timedelta(days=3), valid_end=date.today() + timedelta(days=25), target_group="新注册会员", issued_count=500, used_count=96, status="可用"),
         ]
+        coupon_rules = [
+            {"per_member_limit": 3, "per_order_use_limit": 1, "stackable": False, "total_issue_limit": 3000, "total_redeem_limit": 1200, "issue_mode": "手动发放"},
+            {"per_member_limit": 2, "per_order_use_limit": 1, "stackable": True, "total_issue_limit": 2000, "total_redeem_limit": 800, "applicable_member_levels": ["银卡会员", "金卡会员", "黑金会员"], "applicable_member_groups": ["高价值会员", "高频购买会员"], "issue_mode": "自动匹配发放"},
+            {"per_member_limit": 1, "per_order_use_limit": 1, "stackable": False, "total_issue_limit": 1500, "total_redeem_limit": 600, "applicable_seasons": ["夏季", "春夏"], "issue_mode": "条件匹配后人工确认"},
+            {"per_member_limit": 2, "per_order_use_limit": 1, "stackable": False, "total_issue_limit": 1000, "total_redeem_limit": 500, "applicable_seasons": ["秋冬"], "target_tags": ["清仓偏好", "促销敏感"], "issue_mode": "条件匹配后人工确认"},
+            {"per_member_limit": 5, "per_order_use_limit": 1, "stackable": True, "total_issue_limit": 1800, "total_redeem_limit": 900, "applicable_member_levels": ["金卡会员", "黑金会员"], "issue_mode": "手动发放"},
+            {"per_member_limit": 1, "per_order_use_limit": 1, "stackable": False, "total_issue_limit": 1200, "total_redeem_limit": 500, "applicable_member_groups": ["高价值会员"], "target_tags": ["高客单价"], "issue_mode": "自动匹配发放"},
+            {"per_member_limit": 2, "per_order_use_limit": 1, "stackable": True, "total_issue_limit": 900, "total_redeem_limit": 300, "applicable_category_ids": ["配饰", "鞋类"], "target_tags": ["配饰偏好"], "issue_mode": "条件匹配后人工确认"},
+            {"per_member_limit": 1, "per_order_use_limit": 1, "stackable": False, "total_issue_limit": 2000, "total_redeem_limit": 1000, "applicable_member_groups": [], "issue_mode": "新会员自动发放", "auto_issue_enabled": True},
+        ]
+        for coupon, rule in zip(coupons, coupon_rules):
+            for key, value in rule.items():
+                if isinstance(value, list):
+                    value = json.dumps(value, ensure_ascii=False)
+                setattr(coupon, key, value)
         db.add_all(coupons)
 
         member_names = [
@@ -208,7 +226,7 @@ def seed() -> None:
             r_score = 5 if (member.last_purchase_at and (datetime.utcnow() - member.last_purchase_at).days <= 15) else 3 if member.last_purchase_at and (datetime.utcnow() - member.last_purchase_at).days <= 90 else 2
             f_score = 5 if member.total_orders >= 8 else 4 if member.total_orders >= 5 else 3 if member.total_orders >= 3 else 2
             m_score = 5 if member.total_spent >= 8000 else 4 if member.total_spent >= 3000 else 3 if member.total_spent >= 1000 else 2
-            member_group = "高价值会员" if min(r_score, f_score, m_score) >= 4 else ("流失风险会员" if r_score <= 2 and m_score >= 4 else ("沉睡会员" if r_score <= 2 else "潜力会员"))
+            member_group = "高价值会员" if min(r_score, f_score, m_score) >= 4 else ("低频购买会员" if r_score <= 2 else "普通会员")
             db.add(
                 MemberTag(
                     member_id=member.id,
@@ -252,7 +270,7 @@ def seed() -> None:
             if index % 3 == 0:
                 items.append((second_sku, 1))
             method = payment_methods[index % len(payment_methods)]
-            order_time = datetime.utcnow() - timedelta(days=index % 8, hours=(index * 2) % 24)
+            order_time = datetime.utcnow() - timedelta(days=(index * 11) % 210, hours=(index * 2) % 24)
             status = reconcile_statuses[index % len(reconcile_statuses)]
             order_specs.append((store, member, promotion, items, method, order_time, status))
 
@@ -277,14 +295,17 @@ def seed() -> None:
                 line_total = sku.list_price * quantity
                 line_paid = round(line_total * discount_rate, 2)
                 line_discount = round(line_total - line_paid, 2)
+                line_cost = round(sku.cost_price * quantity, 2)
                 db.add(
                     SalesOrderItem(
                         order_id=order.id,
                         sku_id=sku.id,
                         quantity=quantity,
                         unit_price=sku.list_price,
+                        unit_cost=sku.cost_price,
                         discount_amount=line_discount,
                         subtotal=line_paid,
+                        cost_amount=line_cost,
                     )
                 )
                 inventory = (
@@ -296,7 +317,7 @@ def seed() -> None:
                     inventory.quantity -= quantity
                 total_amount += line_total
                 discount_amount += line_discount
-                cost_amount += sku.cost_price * quantity
+                cost_amount += line_cost
 
             paid_amount = round(total_amount - discount_amount, 2)
             order.total_amount = round(total_amount, 2)
@@ -340,7 +361,7 @@ def seed() -> None:
                     coupon_id=coupon.id,
                     promotion_id=coupon.promotion_id,
                     channel=channels[index % len(channels)],
-                    touch_time=datetime.utcnow() - timedelta(days=index, hours=index % 6),
+                    touch_time=datetime.utcnow() - timedelta(days=(index * 9) % 180, hours=index % 6),
                     participation_status=participation_statuses[index % len(participation_statuses)],
                     writeoff_status=writeoff_statuses[index % len(writeoff_statuses)],
                     remark="第六阶段会员营销演示触达记录",
@@ -378,8 +399,8 @@ def seed() -> None:
                     reason="畅销款低于安全库存，申请补货。",
                     applicant="门店店长",
                     status="待审核",
-                    created_at=datetime.utcnow() - timedelta(hours=index),
-                    updated_at=datetime.utcnow() - timedelta(hours=index),
+                    created_at=datetime.utcnow() - timedelta(days=(index * 13) % 120, hours=index),
+                    updated_at=datetime.utcnow() - timedelta(days=(index * 13) % 120, hours=index),
                 )
             )
 
@@ -405,7 +426,7 @@ def seed() -> None:
                 reason="库存预警已审核，进入调拨在途。",
                 applicant="区域督导",
                 status="在途",
-                created_at=datetime.utcnow() - timedelta(days=index),
+                created_at=datetime.utcnow() - timedelta(days=(index * 17) % 150),
                 updated_at=datetime.utcnow() - timedelta(hours=index),
             )
             db.add(request)
@@ -422,8 +443,8 @@ def seed() -> None:
                     transfer_qty=transfer_qty,
                     in_transit_qty=transfer_qty,
                     status="在途",
-                    shipped_at=datetime.utcnow() - timedelta(days=index),
-                    expected_arrival_at=datetime.utcnow() + timedelta(days=3 - index),
+                    shipped_at=datetime.utcnow() - timedelta(days=(index * 19) % 150),
+                    expected_arrival_at=datetime.utcnow() - timedelta(days=((index * 19) % 150) - 3),
                 )
             )
 

@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 from uuid import uuid4
+import json
 import re
 
 from fastapi import HTTPException
@@ -90,6 +91,8 @@ def create_product(db: Session, payload: schemas.ProductCreate) -> models.Produc
         status=payload.status,
         launch_date=payload.launch_date or datetime.utcnow().date(),
         lifecycle_status=payload.lifecycle_status,
+        sale_price=round(float(payload.sale_price or 0), 2),
+        cost_price=round(float(payload.cost_price or 0), 2),
     )
     db.add(product)
     db.commit()
@@ -173,9 +176,12 @@ def create_sku(db: Session, payload: schemas.SKUCreate) -> models.SKU:
     existing_barcode = db.query(models.SKU).filter(models.SKU.barcode == barcode).first()
     if existing_barcode:
         raise HTTPException(status_code=400, detail="条码已存在")
-    list_price = payload.list_price or payload.sale_price or payload.price
+    list_price = payload.list_price or payload.sale_price or payload.price or product.sale_price
     if not list_price:
         raise HTTPException(status_code=400, detail="销售价不能为空")
+    cost_price = payload.cost_price
+    if cost_price is None:
+        cost_price = product.cost_price if product.cost_price > 0 else round(list_price * 0.55, 2)
     sku = models.SKU(
         sku_code=sku_code,
         product_id=payload.product_id,
@@ -183,7 +189,7 @@ def create_sku(db: Session, payload: schemas.SKUCreate) -> models.SKU:
         size=payload.size,
         barcode=barcode,
         list_price=list_price,
-        cost_price=round(list_price * 0.55, 2),
+        cost_price=round(float(cost_price), 2),
         status=payload.status,
     )
     db.add(sku)
@@ -205,6 +211,8 @@ def update_sku(db: Session, sku_id: int, payload: schemas.SKUUpdate) -> models.S
     list_price = updates.pop("sale_price", None) or updates.pop("price", None)
     if list_price is not None and "list_price" not in updates:
         updates["list_price"] = list_price
+    if updates.get("cost_price") is None:
+        updates.pop("cost_price", None)
     updates.pop("barcode", None)
     for key, value in updates.items():
         setattr(sku, key, value)
@@ -308,7 +316,7 @@ def search_pos_skus(db: Session, store_id: int, keyword: str = "") -> list[dict]
             "color": item.sku.color,
             "size": item.sku.size,
             "list_price": item.sku.list_price,
-            "cost_price": item.sku.cost_price,
+            "cost_price": _sku_cost_price(item.sku),
             "store_id": item.store_id,
             "store_name": item.store.name,
             "inventory_quantity": item.quantity,
@@ -360,11 +368,33 @@ def list_coupons(db: Session) -> list[models.Coupon]:
     )
 
 
+def generate_coupon_code(db: Session) -> str:
+    prefix = f"CP{datetime.utcnow():%Y%m%d}"
+    existing_codes = [
+        code
+        for (code,) in db.query(models.Coupon.code)
+        .filter(models.Coupon.code.like(f"{prefix}%"))
+        .all()
+    ]
+    max_seq = 0
+    for code in existing_codes:
+        suffix = (code or "").replace(prefix, "", 1)
+        if suffix.isdigit():
+            max_seq = max(max_seq, int(suffix))
+    while True:
+        max_seq += 1
+        candidate = f"{prefix}{max_seq:04d}"
+        if not db.query(models.Coupon).filter(models.Coupon.code == candidate).first():
+            return candidate
+
+
 def create_coupon(db: Session, payload: schemas.CouponCreate) -> models.Coupon:
-    existing = db.query(models.Coupon).filter(models.Coupon.code == payload.code).first()
+    data = payload.model_dump()
+    data["code"] = (data.get("code") or "").strip() or generate_coupon_code(db)
+    existing = db.query(models.Coupon).filter(models.Coupon.code == data["code"]).first()
     if existing:
         raise HTTPException(status_code=400, detail="优惠券编号已存在")
-    coupon = models.Coupon(**payload.model_dump())
+    coupon = models.Coupon(**data)
     db.add(coupon)
     db.commit()
     db.refresh(coupon)
@@ -395,6 +425,415 @@ def update_coupon_status(db: Session, coupon_id: int, status: str) -> models.Cou
     db.commit()
     db.refresh(coupon)
     return coupon
+
+
+def _json_values(value: str | None) -> list[str]:
+    if not value:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = [item.strip() for item in text.split(",") if item.strip()]
+    else:
+        parsed = value
+    if not isinstance(parsed, list):
+        parsed = [parsed]
+    values: list[str] = []
+    for item in parsed:
+        if isinstance(item, dict):
+            for key in ("id", "name", "code", "value", "label"):
+                if item.get(key) is not None:
+                    values.append(str(item[key]))
+                    break
+        elif item is not None:
+            values.append(str(item))
+    return [item for item in values if item]
+
+
+def _member_group(member: models.Member) -> str:
+    return member.tag_profile.member_group if member.tag_profile else ""
+
+
+MEMBER_LIFECYCLE_STATUS_SET = {"新会员", "活跃会员", "流失风险会员", "沉睡会员", "未消费会员"}
+MEMBER_GROUP_SET = {
+    "高价值会员",
+    "价格敏感会员",
+    "促销敏感会员",
+    "新品偏好会员",
+    "清仓偏好会员",
+    "高频购买会员",
+    "低频购买会员",
+    "女装偏好会员",
+    "配饰偏好会员",
+    "普通会员",
+}
+
+
+def _normalize_member_groups(values: list[str]) -> set[str]:
+    return {value for value in values if value in MEMBER_GROUP_SET and value not in MEMBER_LIFECYCLE_STATUS_SET}
+
+
+def _member_all_tags(member: models.Member) -> set[str]:
+    tags = set(member.member_tags)
+    if member.tag_profile:
+        tags.update(
+            tag
+            for tag in [
+                member.tag_profile.member_group,
+                member.tag_profile.preference_tag,
+                member.tag_profile.price_sensitive_tag,
+                member.tag_profile.activity_tag,
+                member.tag_profile.risk_tag,
+            ]
+            if tag
+        )
+    return tags
+
+
+def _member_store_values(member: models.Member) -> set[str]:
+    return set(_json_values(member.registered_store))
+
+
+def compute_member_lifecycle_status(member: models.Member, today=None) -> str:
+    today = today or datetime.utcnow().date()
+    joined_at = getattr(member, "joined_at", None)
+    if joined_at and (today - joined_at.date()).days <= 30:
+        return "新会员"
+    total_orders = int(getattr(member, "total_orders", 0) or 0)
+    last_purchase_at = getattr(member, "last_purchase_at", None)
+    if total_orders <= 0 or not last_purchase_at:
+        return "未消费会员"
+    days_since_purchase = (today - last_purchase_at.date()).days
+    if days_since_purchase <= 45:
+        return "活跃会员"
+    if 45 <= days_since_purchase < 90:
+        return "流失风险会员"
+    if days_since_purchase >= 90:
+        return "沉睡会员"
+    return "普通会员"
+
+
+def _member_registered_store_names(db: Session, member: models.Member) -> list[str]:
+    raw_values: list[str] = []
+    raw_text = (member.registered_store or "").strip()
+    if raw_text:
+        try:
+            parsed = json.loads(raw_text)
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if isinstance(item, dict):
+                        raw_values.append(str(item.get("id") or item.get("name") or item.get("code") or ""))
+                        if item.get("name"):
+                            raw_values.append(str(item["name"]))
+                    elif item is not None:
+                        raw_values.append(str(item))
+            else:
+                raw_values = _json_values(raw_text)
+        except json.JSONDecodeError:
+            raw_values = _json_values(raw_text)
+    names: list[str] = []
+    for value in raw_values:
+        store = None
+        if str(value).isdigit():
+            store = db.get(models.Store, int(value))
+        if not store:
+            store = (
+                db.query(models.Store)
+                .filter(or_(models.Store.name == str(value), models.Store.code == str(value)))
+                .first()
+            )
+        names.append(store.name if store else str(value))
+    return [name for name in dict.fromkeys(names) if name]
+
+
+def _coupon_rule_values(coupon: models.Coupon, field: str) -> list[str]:
+    values = _json_values(getattr(coupon, field, ""))
+    if field == "applicable_member_groups":
+        return sorted(_normalize_member_groups(values))
+    return values
+
+
+def _coupon_is_issueable(coupon: models.Coupon) -> tuple[bool, str]:
+    today = datetime.utcnow().date()
+    status = coupon.status or ""
+    if "停" in status or "仠" in status:
+        return False, "优惠券已停用"
+    if coupon.valid_start and today < coupon.valid_start:
+        return False, "优惠券未开始"
+    if coupon.valid_end and today > coupon.valid_end:
+        return False, "优惠券已过期"
+    if coupon.total_issue_limit is not None and coupon.issued_count >= coupon.total_issue_limit:
+        return False, "优惠券总发放数量已达上限"
+    return True, ""
+
+
+def _member_matches_coupon(coupon: models.Coupon, member: models.Member) -> tuple[bool, list[str]]:
+    reasons: list[str] = []
+    levels = set(_coupon_rule_values(coupon, "applicable_member_levels"))
+    if levels:
+        if member.level not in levels:
+            return False, []
+        reasons.append("会员等级匹配")
+    groups = set(_coupon_rule_values(coupon, "applicable_member_groups"))
+    member_group = _member_group(member)
+    if groups:
+        if member_group not in groups:
+            return False, []
+        reasons.append("会员分群匹配")
+    tags = set(_coupon_rule_values(coupon, "target_tags"))
+    member_tags = _member_all_tags(member)
+    if tags:
+        matched_tags = sorted(tags & member_tags)
+        if not matched_tags:
+            return False, []
+        reasons.append("标签匹配：" + "、".join(matched_tags[:3]))
+    store_ids = set(_coupon_rule_values(coupon, "applicable_store_ids"))
+    if store_ids:
+        member_stores = _member_store_values(member)
+        if not (store_ids & member_stores):
+            return False, []
+        reasons.append("注册门店匹配")
+    return True, reasons or ["不限制会员条件"]
+
+
+def _normalized_lifecycle_statuses(conditions: schemas.CouponMatchConditions) -> set[str]:
+    statuses = set(conditions.lifecycle_statuses or [])
+    if conditions.is_new_member is True:
+        statuses.add("新会员")
+    if conditions.is_sleeping_member is True:
+        statuses.add("沉睡会员")
+    if conditions.is_churn_risk is True:
+        statuses.add("流失风险会员")
+    return statuses
+
+
+def _member_matches_conditions(db: Session, member: models.Member, conditions: schemas.CouponMatchConditions) -> tuple[bool, list[str]]:
+    reasons: list[str] = []
+    if conditions.member_levels:
+        if member.level not in set(conditions.member_levels):
+            return False, []
+        reasons.append("人工等级条件匹配")
+    condition_groups = _normalize_member_groups(conditions.member_groups or [])
+    if condition_groups:
+        if _member_group(member) not in condition_groups:
+            return False, []
+        reasons.append("人工分群条件匹配")
+    if conditions.tags:
+        matched_tags = sorted(set(conditions.tags) & _member_all_tags(member))
+        if not matched_tags:
+            return False, []
+        reasons.append("人工标签条件匹配")
+    if conditions.store_ids:
+        store_values = {str(item) for item in conditions.store_ids}
+        selected_store_names = {
+            store.name
+            for store in db.query(models.Store).filter(models.Store.id.in_(conditions.store_ids)).all()
+        }
+        member_store_names = set(_member_registered_store_names(db, member))
+        if not (store_values & _member_store_values(member)) and not (selected_store_names & member_store_names):
+            return False, []
+        reasons.append("人工门店条件匹配")
+    account_statuses = set((conditions.account_statuses or []) + (conditions.member_statuses or []))
+    if account_statuses:
+        if member.status not in account_statuses:
+            return False, []
+        reasons.append(f"账户状态匹配：{member.status}")
+    lifecycle_statuses = _normalized_lifecycle_statuses(conditions)
+    lifecycle_status = compute_member_lifecycle_status(member)
+    if lifecycle_statuses:
+        if lifecycle_status not in lifecycle_statuses:
+            return False, []
+        reasons.append(f"生命周期状态匹配：{lifecycle_status}")
+    if conditions.recent_purchase_start:
+        if not member.last_purchase_at or member.last_purchase_at.date() < conditions.recent_purchase_start:
+            return False, []
+        reasons.append("最近消费时间匹配")
+    if conditions.recent_purchase_end:
+        if not member.last_purchase_at or member.last_purchase_at.date() > conditions.recent_purchase_end:
+            return False, []
+        reasons.append("最近消费时间匹配")
+    if conditions.min_total_spent is not None:
+        if member.total_spent < conditions.min_total_spent:
+            return False, []
+        reasons.append("累计消费金额匹配")
+    if conditions.max_total_spent is not None:
+        if member.total_spent > conditions.max_total_spent:
+            return False, []
+        reasons.append("累计消费金额匹配")
+    if conditions.min_points is not None:
+        if member.points < conditions.min_points:
+            return False, []
+        reasons.append("积分范围匹配")
+    if conditions.max_points is not None:
+        if member.points > conditions.max_points:
+            return False, []
+        reasons.append("积分范围匹配")
+    return True, reasons
+
+
+def match_coupon_members(db: Session, coupon_id: int, payload: schemas.CouponMatchRequest) -> dict:
+    coupon = db.get(models.Coupon, coupon_id)
+    if not coupon:
+        raise HTTPException(status_code=404, detail="优惠券不存在")
+    members = (
+        db.query(models.Member)
+        .options(joinedload(models.Member.tag_profile))
+        .order_by(models.Member.id)
+        .all()
+    )
+    exclude_ids = set(payload.exclude_member_ids or [])
+    extra_ids = set(payload.extra_member_ids or [])
+    matched: dict[int, dict] = {}
+    for member in members:
+        if member.id in exclude_ids:
+            continue
+        coupon_match, coupon_reasons = _member_matches_coupon(coupon, member)
+        condition_match, condition_reasons = _member_matches_conditions(db, member, payload.conditions)
+        if coupon_match and condition_match:
+            store_names = _member_registered_store_names(db, member)
+            matched[member.id] = {
+                "id": member.id,
+                "name": member.name,
+                "phone": member.phone,
+                "level": member.level,
+                "member_group": _member_group(member) or "-",
+                "registered_store": "、".join(store_names) or "-",
+                "registered_store_text": "、".join(store_names) or "-",
+                "registered_store_names": store_names,
+                "account_status": member.status or "-",
+                "lifecycle_status": compute_member_lifecycle_status(member),
+                "last_purchase_at": member.last_purchase_at,
+                "match_reason": "；".join(coupon_reasons + condition_reasons),
+            }
+    for member_id in extra_ids - exclude_ids:
+        member = db.get(models.Member, member_id)
+        if member:
+            store_names = _member_registered_store_names(db, member)
+            matched[member.id] = {
+                "id": member.id,
+                "name": member.name,
+                "phone": member.phone,
+                "level": member.level,
+                "member_group": _member_group(member) or "-",
+                "registered_store": "、".join(store_names) or "-",
+                "registered_store_text": "、".join(store_names) or "-",
+                "registered_store_names": store_names,
+                "account_status": member.status or "-",
+                "lifecycle_status": compute_member_lifecycle_status(member),
+                "last_purchase_at": member.last_purchase_at,
+                "match_reason": "人工添加",
+            }
+    rows = list(matched.values())
+    return {"matched_count": len(rows), "matched_members": rows}
+
+
+def _member_coupon_touch_count(db: Session, member_id: int, coupon_id: int) -> int:
+    return (
+        db.query(models.MarketingTouch)
+        .filter(
+            models.MarketingTouch.member_id == member_id,
+            models.MarketingTouch.coupon_id == coupon_id,
+        )
+        .count()
+    )
+
+
+def _issue_coupon_to_member_channels(
+    db: Session,
+    coupon: models.Coupon,
+    member: models.Member,
+    channels: list[str],
+    remark: str,
+) -> tuple[int, list[str]]:
+    reasons: list[str] = []
+    issueable, reason = _coupon_is_issueable(coupon)
+    if not issueable:
+        return 0, [reason]
+    matches, _ = _member_matches_coupon(coupon, member)
+    if not matches:
+        return 0, ["会员不符合优惠券适用范围"]
+    current_count = _member_coupon_touch_count(db, member.id, coupon.id)
+    created = 0
+    for channel in channels:
+        if coupon.total_issue_limit is not None and coupon.issued_count >= coupon.total_issue_limit:
+            reasons.append("优惠券总发放数量已达上限")
+            break
+        if coupon.per_member_limit is not None and current_count >= coupon.per_member_limit:
+            reasons.append("该会员已达到领取上限")
+            break
+        existing = (
+            db.query(models.MarketingTouch)
+            .filter(
+                models.MarketingTouch.member_id == member.id,
+                models.MarketingTouch.coupon_id == coupon.id,
+                models.MarketingTouch.channel == channel,
+                models.MarketingTouch.writeoff_status == "未核销",
+            )
+            .first()
+        )
+        if existing:
+            reasons.append(f"{channel} 渠道已发放")
+            continue
+        db.add(
+            models.MarketingTouch(
+                member_id=member.id,
+                coupon_id=coupon.id,
+                promotion_id=coupon.promotion_id,
+                channel=channel,
+                participation_status="未参与",
+                writeoff_status="未核销",
+                remark=remark,
+            )
+        )
+        coupon.issued_count += 1
+        current_count += 1
+        created += 1
+    return created, reasons
+
+
+def issue_coupon_to_members(db: Session, coupon_id: int, payload: schemas.CouponIssueRequest) -> dict:
+    coupon = db.get(models.Coupon, coupon_id)
+    if not coupon:
+        raise HTTPException(status_code=404, detail="优惠券不存在")
+    created_count = 0
+    failed_items: list[dict] = []
+    channels = [channel for channel in dict.fromkeys(payload.channels) if channel]
+    for member_id in dict.fromkeys(payload.member_ids):
+        member = db.get(models.Member, member_id)
+        if not member:
+            failed_items.append({"member_id": member_id, "reason": "会员不存在"})
+            continue
+        created, reasons = _issue_coupon_to_member_channels(db, coupon, member, channels, payload.remark)
+        created_count += created
+        if reasons:
+            failed_items.append({"member_id": member_id, "reason": "；".join(dict.fromkeys(reasons))})
+    db.commit()
+    return {
+        "created_count": created_count,
+        "skipped_count": len(failed_items),
+        "failed_items": failed_items,
+    }
+
+
+def _auto_issue_new_member_coupons(db: Session, member: models.Member) -> None:
+    coupons = (
+        db.query(models.Coupon)
+        .filter(models.Coupon.auto_issue_enabled.is_(True))
+        .order_by(models.Coupon.id)
+        .all()
+    )
+    for coupon in coupons:
+        issue_mode = coupon.issue_mode or ""
+        if issue_mode and "新会员" not in issue_mode and "new" not in issue_mode.lower() and set(issue_mode) != {"?"}:
+            continue
+        try:
+            _issue_coupon_to_member_channels(db, coupon, member, ["APP推送"], "新会员自动发放")
+        except Exception:
+            continue
 
 
 def list_members(db: Session) -> list[models.Member]:
@@ -444,6 +883,11 @@ def create_member(db: Session, payload: schemas.MemberCreate) -> models.Member:
         registered_store=payload.registered_store,
     )
     db.add(member)
+    db.flush()
+    try:
+        _auto_issue_new_member_coupons(db, member)
+    except Exception:
+        pass
     db.commit()
     db.refresh(member)
     return member
@@ -644,13 +1088,30 @@ def repurchase_analysis(db: Session) -> dict:
         }
         for index, member in enumerate(members, start=1)
     ]
-    levels = ["普通会员", "银卡会员", "金卡会员", "黑金会员"]
+    all_members = db.query(models.Member).all()
+    member_levels = ["普通会员", "银卡会员", "金卡会员", "黑金会员"]
+    level_counts = {level: 0 for level in member_levels}
+    for member in all_members:
+        level = member.level or "普通会员"
+        level_counts[level] = level_counts.get(level, 0) + 1
     level_distribution = [
         {
             "level": level,
-            "count": db.query(models.Member).filter(models.Member.level == level).count(),
+            "count": level_counts.get(level, 0),
         }
-        for level in levels
+        for level in member_levels
+    ]
+    lifecycle_levels = ["新会员", "活跃会员", "流失风险会员", "沉睡会员", "未消费会员", "普通会员"]
+    lifecycle_counts = {level: 0 for level in lifecycle_levels}
+    for member in all_members:
+        status = compute_member_lifecycle_status(member)
+        lifecycle_counts[status] = lifecycle_counts.get(status, 0) + 1
+    lifecycle_distribution = [
+        {
+            "level": level,
+            "count": lifecycle_counts.get(level, 0),
+        }
+        for level in lifecycle_levels
     ]
     touches = list_marketing_touches(db)
     effect_map: dict[str, dict] = {}
@@ -689,6 +1150,7 @@ def repurchase_analysis(db: Session) -> dict:
     return {
         "repurchase_ranking": ranking,
         "level_distribution": level_distribution,
+        "lifecycle_distribution": lifecycle_distribution,
         "marketing_effects": marketing_effects,
     }
 
@@ -1201,24 +1663,29 @@ def create_order(db: Session, payload: schemas.OrderCreate) -> models.SalesOrder
         if not inventory or inventory.quantity < item.quantity:
             raise HTTPException(status_code=400, detail=f"SKU {sku.sku_code} 库存不足")
 
-        line_total = sku.list_price * item.quantity
+        unit_price = _sku_sale_price(sku)
+        unit_cost = _sku_cost_price(sku)
+        line_total = unit_price * item.quantity
         line_paid = round(line_total * discount_rate, 2)
         line_discount = round(line_total - line_paid, 2)
+        line_cost = round(unit_cost * item.quantity, 2)
         db.add(
             models.SalesOrderItem(
                 order_id=order.id,
                 sku_id=item.sku_id,
                 quantity=item.quantity,
-                unit_price=sku.list_price,
+                unit_price=unit_price,
+                unit_cost=unit_cost,
                 discount_amount=line_discount,
                 subtotal=line_paid,
+                cost_amount=line_cost,
             )
         )
         inventory.quantity -= item.quantity
         inventory.updated_at = datetime.utcnow()
         total_amount += line_total
         discount_amount += line_discount
-        cost_amount += sku.cost_price * item.quantity
+        cost_amount += line_cost
 
     paid_amount = round(total_amount - discount_amount, 2)
     order.total_amount = round(total_amount, 2)
@@ -1372,7 +1839,7 @@ def finance_summary(db: Session) -> dict:
     today = datetime.utcnow().date()
     records = _finance_record_query(db).all()
     today_records = [record for record in records if record.business_date == today]
-    gross_profit = sum(record.gross_profit for record in records)
+    gross_profit = sum(_record_gross_profit(record) for record in records)
     sales_amount = sum(record.sales_amount for record in records)
     return {
         "today_order_amount": _round(sum(_order_amount(record) for record in today_records)),
@@ -1400,8 +1867,8 @@ def finance_profit_trend(db: Session) -> dict:
                 "payment_amount": _round(sum(_payment_amount(record) for record in day_records)),
                 "difference_amount": _round(sum(_difference_amount(record) for record in day_records)),
                 "sales_amount": _round(sum(record.sales_amount for record in day_records)),
-                "cost_amount": _round(sum(record.cost_amount for record in day_records)),
-                "gross_profit": _round(sum(record.gross_profit for record in day_records)),
+                "cost_amount": _round(sum(_record_cost_amount(record) for record in day_records)),
+                "gross_profit": _round(sum(_record_gross_profit(record) for record in day_records)),
             }
         )
     product_rows, category_rows = _profit_breakdown(db)
@@ -1452,8 +1919,8 @@ def finance_store_settlement(db: Session) -> list[dict]:
     for store in stores:
         records = _finance_record_query(db).filter(models.FinanceRecord.store_id == store.id).all()
         sales_amount = sum(record.sales_amount for record in records)
-        cost_amount = sum(record.cost_amount for record in records)
-        gross_profit = sum(record.gross_profit for record in records)
+        cost_amount = sum(_record_cost_amount(record) for record in records)
+        gross_profit = sum(_record_gross_profit(record) for record in records)
         order_count = len({record.order_id for record in records})
         difference_amount = sum(_difference_amount(record) for record in records)
         status = "良好"
@@ -1485,6 +1952,10 @@ def _finance_record_query(db: Session):
     return db.query(models.FinanceRecord).options(
         joinedload(models.FinanceRecord.order).joinedload(models.SalesOrder.payment),
         joinedload(models.FinanceRecord.order).joinedload(models.SalesOrder.store),
+        joinedload(models.FinanceRecord.order)
+        .joinedload(models.SalesOrder.items)
+        .joinedload(models.SalesOrderItem.sku)
+        .joinedload(models.SKU.product),
         joinedload(models.FinanceRecord.store),
     )
 
@@ -1643,7 +2114,7 @@ def _number_suffix(value: str) -> int:
 
 
 def _order_cost(order: models.SalesOrder) -> float:
-    return sum((item.sku.cost_price if item.sku else 0) * item.quantity for item in order.items)
+    return sum(_order_item_cost(item) for item in order.items)
 
 
 def _profit_breakdown(db: Session) -> tuple[list[dict], list[dict]]:
@@ -1664,7 +2135,7 @@ def _profit_breakdown(db: Session) -> tuple[list[dict], list[dict]]:
         sku_code = sku.sku_code if sku else "-"
         category = product.category if product else "未分类"
         sales_amount = float(item.subtotal)
-        cost_amount = float((sku.cost_price if sku else 0) * item.quantity)
+        cost_amount = float(_order_item_cost(item))
         product_key = f"{product_name}-{sku_code}"
         product_row = product_map.setdefault(
             product_key,
@@ -1716,3 +2187,43 @@ def _round(value: float) -> float:
 
 def _rate(numerator: float, denominator: float) -> float:
     return round((float(numerator or 0) / float(denominator or 1)) * 100, 2) if denominator else 0
+
+
+def _sku_sale_price(sku: models.SKU | None) -> float:
+    if not sku:
+        return 0
+    if sku.list_price is not None and sku.list_price > 0:
+        return float(sku.list_price)
+    product = sku.product
+    if product and product.sale_price is not None and product.sale_price > 0:
+        return float(product.sale_price)
+    return 0
+
+
+def _sku_cost_price(sku: models.SKU | None) -> float:
+    if not sku:
+        return 0
+    if sku.cost_price is not None and sku.cost_price > 0:
+        return float(sku.cost_price)
+    product = sku.product
+    if product and product.cost_price is not None and product.cost_price > 0:
+        return float(product.cost_price)
+    return 0
+
+
+def _order_item_cost(item: models.SalesOrderItem) -> float:
+    if item.cost_amount is not None and item.cost_amount > 0:
+        return float(item.cost_amount)
+    if item.unit_cost is not None and item.unit_cost > 0:
+        return float(item.unit_cost) * item.quantity
+    return _sku_cost_price(item.sku) * item.quantity
+
+
+def _record_cost_amount(record: models.FinanceRecord) -> float:
+    if record.order and record.order.items:
+        return _order_cost(record.order)
+    return float(record.cost_amount or 0)
+
+
+def _record_gross_profit(record: models.FinanceRecord) -> float:
+    return _order_amount(record) - _record_cost_amount(record)

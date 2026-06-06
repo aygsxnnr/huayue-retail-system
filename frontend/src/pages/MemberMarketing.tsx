@@ -4,6 +4,7 @@ import {
   Button,
   Card,
   Col,
+  DatePicker,
   Descriptions,
   Empty,
   Form,
@@ -14,16 +15,18 @@ import {
   Popconfirm,
   Row,
   Select,
+  Segmented,
   Space,
-  Table,
   Tabs,
   Tag,
+  Tooltip,
   Typography,
   message
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import * as echarts from 'echarts';
 import MetricCard from '../components/MetricCard';
+import ResizableTable from '../components/ResizableTable';
 import { fetchCoupons, type Coupon } from '../api/products';
 import { createStore, fetchStores, updateStore, updateStoreStatus, type Store } from '../api/stores';
 import {
@@ -48,6 +51,15 @@ import {
 
 const memberLevels = ['普通会员', '银卡会员', '金卡会员', '黑金会员'];
 const memberStatuses = ['正常', '活跃', '沉睡', '流失风险', '已停用'];
+const memberGroupOptions = ['高价值会员', '价格敏感会员', '促销敏感会员', '新品偏好会员', '清仓偏好会员', '高频购买会员', '低频购买会员', '女装偏好会员', '配饰偏好会员', '普通会员'];
+const memberLifecycleOptions = ['新会员', '活跃会员', '流失风险会员', '沉睡会员', '未消费会员', '普通会员'];
+const standardMemberTagOptions = ['新品敏感', '促销敏感', '高客单价', '高频购买', '低频购买', '女装偏好', '配饰偏好', '清仓偏好', '价格敏感', '高价值'];
+const periodOptions = [
+  { label: '日', value: 'day' },
+  { label: '周', value: 'week' },
+  { label: '月', value: 'month' },
+  { label: '季度', value: 'quarter' }
+] as const;
 const touchChannels = ['短信', '微信', 'APP推送', '小程序', '人工电话'];
 const storeStatuses = ['正常营业', '临时歇业', '闭店升级', '已关闭', '停用'];
 const normalStoreStatuses = ['正常营业', '营业中'];
@@ -168,6 +180,26 @@ function memberLastPurchase(member?: Member | null) {
   return member?.last_purchase_date ?? member?.last_purchase_at ?? null;
 }
 
+function matchesMulti<T>(selected: T[], value: T) {
+  return !selected.length || selected.includes(value);
+}
+
+function computeLifecycleStatus(member: Member) {
+  const joined = new Date(member.joined_at);
+  const joinedDays = Number.isNaN(joined.getTime()) ? Number.POSITIVE_INFINITY : (Date.now() - joined.getTime()) / 86400000;
+  const lastPurchase = memberLastPurchase(member);
+  const lastPurchaseDate = lastPurchase ? new Date(lastPurchase) : null;
+  const purchaseDays = lastPurchaseDate && !Number.isNaN(lastPurchaseDate.getTime())
+    ? (Date.now() - lastPurchaseDate.getTime()) / 86400000
+    : Number.POSITIVE_INFINITY;
+  if (joinedDays <= 30) return '新会员';
+  if (memberOrders(member) <= 0 || !lastPurchaseDate || Number.isNaN(lastPurchaseDate.getTime())) return '未消费会员';
+  if (purchaseDays <= 45) return '活跃会员';
+  if (purchaseDays >= 45 && purchaseDays < 90) return '流失风险会员';
+  if (purchaseDays >= 90) return '沉睡会员';
+  return '普通会员';
+}
+
 function tagColor(value: string) {
   if (['活跃', '正常', '已核销', '高价值会员'].includes(value)) return 'green';
   if (['银卡会员', '金卡会员', '已点击', '已参与', '潜力会员'].includes(value)) return 'blue';
@@ -190,21 +222,59 @@ function storeOptionLabel(store: Store) {
   return normalStoreStatuses.includes(store.status) ? base : `${base}（${store.status || '状态未设置'}）`;
 }
 
-function LevelChart({ data }: { data: RepurchaseAnalysis['level_distribution'] }) {
+function touchSource(record: MarketingTouch) {
+  const remark = record.remark || '';
+  if (remark.includes('智能') || remark.includes('匹配')) return '智能发放';
+  if (remark.includes('新会员')) return '新会员自动发放';
+  if (remark.includes('手动') || remark.includes('鎵嬪姩')) return '手动发放';
+  return '系统触达';
+}
+
+function LevelChart({
+  data,
+  chartId,
+  seriesName
+}: {
+  data: RepurchaseAnalysis['level_distribution'];
+  chartId: string;
+  seriesName: string;
+}) {
+  const safeData = data || [];
+  const hasData = safeData.some((item) => Number(item.count || 0) > 0);
+
   useEffect(() => {
-    const node = document.getElementById('member-level-chart');
-    if (!node) return;
+    const node = document.getElementById(chartId);
+    if (!node || !hasData) return;
     const chart = echarts.init(node);
     chart.setOption({
-      color: ['#1677ff', '#13c2c2', '#faad14', '#722ed1'],
-      tooltip: { trigger: 'item' },
+      color: ['#1677ff', '#13c2c2', '#faad14', '#722ed1', '#52c41a', '#eb2f96'],
+      tooltip: {
+        trigger: 'item',
+        formatter: '{b}<br/>人数：{c}<br/>占比：{d}%'
+      },
+      legend: {
+        type: 'scroll',
+        bottom: 0,
+        left: 'center',
+        itemWidth: 10,
+        itemHeight: 10
+      },
       series: [
         {
-          name: '会员等级',
+          name: seriesName,
           type: 'pie',
-          radius: ['48%', '72%'],
-          data: data.map((item) => ({ name: item.level, value: item.count })),
-          label: { formatter: '{b}\n{d}%' }
+          radius: ['42%', '62%'],
+          center: ['50%', '42%'],
+          avoidLabelOverlap: true,
+          data: safeData.map((item) => ({ name: item.level || '-', value: Number(item.count || 0) })),
+          label: { show: false },
+          emphasis: {
+            label: {
+              show: true,
+              formatter: '{b}: {d}%',
+              fontSize: 12
+            }
+          }
         }
       ]
     });
@@ -214,9 +284,13 @@ function LevelChart({ data }: { data: RepurchaseAnalysis['level_distribution'] }
       window.removeEventListener('resize', resize);
       chart.dispose();
     };
-  }, [data]);
+  }, [chartId, hasData, safeData, seriesName]);
 
-  return <div id="member-level-chart" className="chart-box chart-box-small" />;
+  if (!hasData) {
+    return <Empty description="暂无分布数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />;
+  }
+
+  return <div id={chartId} className="chart-box chart-box-small" style={{ height: 280, width: '100%', position: 'relative' }} />;
 }
 
 export default function MemberMarketing() {
@@ -242,9 +316,25 @@ export default function MemberMarketing() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [keyword, setKeyword] = useState('');
-  const [levelFilter, setLevelFilter] = useState('全部');
-  const [statusFilter, setStatusFilter] = useState('全部');
+  const [levelFilter, setLevelFilter] = useState<string[]>([]);
+  const [statusFilter, setStatusFilter] = useState<string[]>([]);
+  const [memberStoreFilter, setMemberStoreFilter] = useState<Array<number | string>>([]);
+  const [memberGroupFilter, setMemberGroupFilter] = useState<string[]>([]);
+  const [memberLifecycleFilter, setMemberLifecycleFilter] = useState<string[]>([]);
+  const [memberTagFilter, setMemberTagFilter] = useState<string[]>([]);
+  const [rfmGroupFilter, setRfmGroupFilter] = useState<string[]>([]);
+  const [rfmTagFilter, setRfmTagFilter] = useState<string[]>([]);
+  const [memberAnalysisPeriod, setMemberAnalysisPeriod] = useState('day');
   const [activeKey, setActiveKey] = useState('members');
+  const [touchFilters, setTouchFilters] = useState({
+    keyword: '',
+    couponIds: [] as number[],
+    channels: [] as string[],
+    participationStatuses: [] as string[],
+    writeoffStatuses: [] as string[],
+    sourceTypes: [] as string[],
+    timeRange: null as [unknown, unknown] | null
+  });
   const selectedRegisteredStores = Form.useWatch('registered_store', memberForm) || [];
 
   const loadStores = async () => {
@@ -298,16 +388,36 @@ export default function MemberMarketing() {
   }, [selectedMember]);
 
   const filteredMembers = useMemo(
-    () =>
+    () => {
+      const rfmMap = new Map(rfm.map((item) => [item.member_id, item]));
+      return (
       members.filter((member) => {
         const text = `${member.member_no}${member.name}${member.phone}`.toLowerCase();
+        const group = rfmMap.get(member.id)?.member_group || '普通会员';
+        const tags = new Set([...(member.member_tags || []), ...(member.tags || '').split(/[、,，]/).map((item) => item.trim()).filter(Boolean), ...(rfmMap.get(member.id)?.main_tags || [])]);
+        const storeValues = registeredStoreValues(member.registered_store, stores).map(String);
         return (
           (!keyword || text.includes(keyword.toLowerCase())) &&
-          (levelFilter === '全部' || member.level === levelFilter) &&
-          (statusFilter === '全部' || member.status === statusFilter)
+          matchesMulti(levelFilter, member.level) &&
+          matchesMulti(statusFilter, member.status) &&
+          (!memberStoreFilter.length || memberStoreFilter.map(String).some((value) => storeValues.includes(value))) &&
+          matchesMulti(memberGroupFilter, group) &&
+          matchesMulti(memberLifecycleFilter, computeLifecycleStatus(member)) &&
+          (!memberTagFilter.length || memberTagFilter.some((tag) => tags.has(tag)))
         );
-      }),
-    [keyword, levelFilter, members, statusFilter]
+      })
+      );
+    },
+    [keyword, levelFilter, memberGroupFilter, memberLifecycleFilter, memberStoreFilter, memberTagFilter, members, rfm, statusFilter, stores]
+  );
+
+  const filteredRfm = useMemo(
+    () =>
+      rfm.filter((item) => (
+        matchesMulti(rfmGroupFilter, item.member_group) &&
+        (!rfmTagFilter.length || rfmTagFilter.some((tag) => (item.main_tags || []).includes(tag)))
+      )),
+    [rfm, rfmGroupFilter, rfmTagFilter]
   );
 
   const metrics = useMemo(() => {
@@ -335,6 +445,26 @@ export default function MemberMarketing() {
     };
   }, [coupons, members]);
 
+  const filteredTouches = useMemo(() => {
+    const keywordText = touchFilters.keyword.trim().toLowerCase();
+    const start = (touchFilters.timeRange?.[0] as { valueOf?: () => number } | null)?.valueOf?.();
+    const end = (touchFilters.timeRange?.[1] as { valueOf?: () => number } | null)?.valueOf?.();
+    return touches.filter((touch) => {
+      const text = `${touch.member?.name || ''}${touch.member?.phone || ''}${touch.member?.member_no || ''}`.toLowerCase();
+      const touchTime = new Date(touch.touch_time).getTime();
+      return (
+        (!keywordText || text.includes(keywordText)) &&
+        (!touchFilters.couponIds.length || (touch.coupon_id ? touchFilters.couponIds.includes(touch.coupon_id) : false)) &&
+        (!touchFilters.channels.length || touchFilters.channels.includes(touch.channel)) &&
+        (!touchFilters.participationStatuses.length || touchFilters.participationStatuses.includes(touch.participation_status)) &&
+        (!touchFilters.writeoffStatuses.length || touchFilters.writeoffStatuses.includes(touch.writeoff_status)) &&
+        (!touchFilters.sourceTypes.length || touchFilters.sourceTypes.includes(touchSource(touch))) &&
+        (!start || (!Number.isNaN(touchTime) && touchTime >= start)) &&
+        (!end || (!Number.isNaN(touchTime) && touchTime <= end + 24 * 60 * 60 * 1000 - 1))
+      );
+    });
+  }, [touchFilters, touches]);
+
   const storeOptions = useMemo(() => {
     const selectedValues = selectedRegisteredStores as Array<number | string>;
     const options = stores.map((store) => ({
@@ -354,6 +484,16 @@ export default function MemberMarketing() {
     });
     return options;
   }, [editingMember?.registered_store, selectedRegisteredStores, stores]);
+
+  const memberStoreFilterOptions = useMemo(
+    () => stores.map((store) => ({ value: store.id as number | string, label: storeOptionLabel(store) })),
+    [stores]
+  );
+
+  const memberTagOptions = useMemo(
+    () => standardMemberTagOptions.map((value) => ({ value, label: value })),
+    []
+  );
 
   const openCreateMember = () => {
     setEditingMember(null);
@@ -576,6 +716,7 @@ export default function MemberMarketing() {
     { title: '触达时间', dataIndex: 'touch_time', render: formatDate },
     { title: '参与状态', dataIndex: 'participation_status', render: (value: string) => <Tag color={tagColor(value)}>{value}</Tag> },
     { title: '核销状态', dataIndex: 'writeoff_status', render: (value: string) => <Tag color={tagColor(value)}>{value}</Tag> },
+    { title: '触达来源', render: (_, record) => <Tag color="blue">{touchSource(record)}</Tag> },
     {
       title: '操作',
       render: (_, record) => (
@@ -655,7 +796,12 @@ export default function MemberMarketing() {
           <Typography.Title level={3}>会员与营销管理</Typography.Title>
           <Typography.Text type="secondary">会员档案、标签分群、优惠券触达与复购分析</Typography.Text>
         </div>
-        <Tag color="blue">第六阶段功能</Tag>
+        <Space wrap>
+          <Tooltip title="顾客注册手机号或首次消费留资后自动成为会员，会员等级根据累计消费、积分和消费频次划分；散客不进入会员营销发券范围。">
+            <Tag color="geekblue">会员体系口径</Tag>
+          </Tooltip>
+          <Tag color="blue">第六阶段功能</Tag>
+        </Space>
       </div>
 
       <Row gutter={[16, 16]}>
@@ -681,12 +827,17 @@ export default function MemberMarketing() {
                 <>
                   <Space className="inventory-toolbar" wrap>
                     <Input.Search placeholder="搜索手机号、姓名、会员号" allowClear value={keyword} onChange={(event) => setKeyword(event.target.value)} style={{ width: 260 }} />
-                    <Select value={levelFilter} onChange={setLevelFilter} options={['全部', ...memberLevels].map((value) => ({ value, label: value }))} style={{ width: 140 }} />
-                    <Select value={statusFilter} onChange={setStatusFilter} options={['全部', ...memberStatuses].map((value) => ({ value, label: value }))} style={{ width: 140 }} />
+                    <Select mode="multiple" allowClear maxTagCount="responsive" placeholder="注册门店" value={memberStoreFilter} onChange={setMemberStoreFilter} options={memberStoreFilterOptions} showSearch optionFilterProp="label" style={{ width: 220 }} />
+                    <Select mode="multiple" allowClear maxTagCount="responsive" placeholder="会员等级" value={levelFilter} onChange={setLevelFilter} options={memberLevels.map((value) => ({ value, label: value }))} style={{ width: 180 }} />
+                    <Select mode="multiple" allowClear maxTagCount="responsive" placeholder="会员分群" value={memberGroupFilter} onChange={setMemberGroupFilter} options={memberGroupOptions.map((value) => ({ value, label: value }))} style={{ width: 200 }} />
+                    <Select mode="multiple" allowClear maxTagCount="responsive" placeholder="会员标签" value={memberTagFilter} onChange={setMemberTagFilter} options={memberTagOptions} showSearch style={{ width: 200 }} />
+                    <Select mode="multiple" allowClear maxTagCount="responsive" placeholder="账户状态" value={statusFilter} onChange={setStatusFilter} options={memberStatuses.map((value) => ({ value, label: value }))} style={{ width: 180 }} />
+                    <Select mode="multiple" allowClear maxTagCount="responsive" placeholder="生命周期状态" value={memberLifecycleFilter} onChange={setMemberLifecycleFilter} options={memberLifecycleOptions.map((value) => ({ value, label: value }))} style={{ width: 200 }} />
+                    <Button onClick={() => { setKeyword(''); setMemberStoreFilter([]); setLevelFilter([]); setMemberGroupFilter([]); setStatusFilter([]); setMemberLifecycleFilter([]); setMemberTagFilter([]); }}>重置</Button>
                     <Button type="primary" onClick={openCreateMember}>新增会员</Button>
                     <Button onClick={() => setStoreManageOpen(true)}>门店管理</Button>
                   </Space>
-                  <Table rowKey="id" loading={loading} columns={memberColumns} dataSource={filteredMembers} scroll={{ x: 1500 }} pagination={{ pageSize: 8 }} />
+                  <ResizableTable rowKey="id" loading={loading} columns={memberColumns} dataSource={filteredMembers} scroll={{ x: 1500 }} pagination={{ pageSize: 8 }} />
                 </>
               )
             },
@@ -749,8 +900,13 @@ export default function MemberMarketing() {
               label: 'RFM分群',
               children: (
                 <>
-                  <Space className="inventory-toolbar"><Button type="primary" loading={submitting} onClick={handleRecalculate}>重新计算RFM</Button></Space>
-                  <Table rowKey="member_id" loading={loading} columns={rfmColumns} dataSource={rfm} pagination={{ pageSize: 8 }} />
+                  <Space className="inventory-toolbar" wrap>
+                    <Button type="primary" loading={submitting} onClick={handleRecalculate}>重新计算RFM</Button>
+                    <Select mode="multiple" allowClear maxTagCount="responsive" placeholder="会员分群" value={rfmGroupFilter} onChange={setRfmGroupFilter} options={memberGroupOptions.map((value) => ({ value, label: value }))} style={{ width: 200 }} />
+                    <Select mode="multiple" allowClear maxTagCount="responsive" placeholder="主要标签" value={rfmTagFilter} onChange={setRfmTagFilter} options={memberTagOptions} showSearch style={{ width: 200 }} />
+                    <Button onClick={() => { setRfmGroupFilter([]); setRfmTagFilter([]); }}>重置</Button>
+                  </Space>
+                  <ResizableTable rowKey="member_id" loading={loading} columns={rfmColumns} dataSource={filteredRfm} pagination={{ pageSize: 8 }} />
                 </>
               )
             },
@@ -759,8 +915,94 @@ export default function MemberMarketing() {
               label: '营销触达',
               children: (
                 <>
-                  <Space className="inventory-toolbar"><Button type="primary" onClick={() => openTouchModal()}>发放优惠券</Button></Space>
-                  <Table rowKey="id" loading={loading} columns={touchColumns} dataSource={touches} scroll={{ x: 1200 }} pagination={{ pageSize: 8 }} />
+                  <Card size="small" className="inventory-section">
+                    <Row gutter={[12, 12]}>
+                      <Col xs={24} md={8}>
+                        <Input
+                          placeholder="会员姓名 / 手机号"
+                          allowClear
+                          value={touchFilters.keyword}
+                          onChange={(event) => setTouchFilters((prev) => ({ ...prev, keyword: event.target.value }))}
+                        />
+                      </Col>
+                      <Col xs={24} md={8}>
+                        <Select
+                          mode="multiple"
+                          allowClear
+                          maxTagCount="responsive"
+                          showSearch
+                          placeholder="优惠券"
+                          className="full-width-control"
+                          value={touchFilters.couponIds}
+                          onChange={(couponIds) => setTouchFilters((prev) => ({ ...prev, couponIds }))}
+                          options={coupons.map((coupon) => ({ value: coupon.id, label: `${coupon.code || '-'} - ${coupon.name || '-'}` }))}
+                        />
+                      </Col>
+                      <Col xs={24} md={8}>
+                        <Select
+                          mode="multiple"
+                          allowClear
+                          maxTagCount="responsive"
+                          placeholder="触达渠道"
+                          className="full-width-control"
+                          value={touchFilters.channels}
+                          onChange={(channels) => setTouchFilters((prev) => ({ ...prev, channels }))}
+                          options={touchChannels.map((value) => ({ value, label: value }))}
+                        />
+                      </Col>
+                      <Col xs={24} md={8}>
+                        <Select
+                          mode="multiple"
+                          allowClear
+                          maxTagCount="responsive"
+                          placeholder="参与状态"
+                          className="full-width-control"
+                          value={touchFilters.participationStatuses}
+                          onChange={(participationStatuses) => setTouchFilters((prev) => ({ ...prev, participationStatuses }))}
+                          options={Array.from(new Set(touches.map((item) => item.participation_status).filter(Boolean))).map((value) => ({ value, label: value }))}
+                        />
+                      </Col>
+                      <Col xs={24} md={8}>
+                        <Select
+                          mode="multiple"
+                          allowClear
+                          maxTagCount="responsive"
+                          placeholder="核销状态"
+                          className="full-width-control"
+                          value={touchFilters.writeoffStatuses}
+                          onChange={(writeoffStatuses) => setTouchFilters((prev) => ({ ...prev, writeoffStatuses }))}
+                          options={Array.from(new Set(touches.map((item) => item.writeoff_status).filter(Boolean))).map((value) => ({ value, label: value }))}
+                        />
+                      </Col>
+                      <Col xs={24} md={8}>
+                        <Select
+                          mode="multiple"
+                          allowClear
+                          maxTagCount="responsive"
+                          placeholder="触达来源"
+                          className="full-width-control"
+                          value={touchFilters.sourceTypes}
+                          onChange={(sourceTypes) => setTouchFilters((prev) => ({ ...prev, sourceTypes }))}
+                          options={['手动发放', '智能发放', '新会员自动发放', '系统触达'].map((value) => ({ value, label: value }))}
+                        />
+                      </Col>
+                      <Col xs={24} md={12}>
+                        <DatePicker.RangePicker
+                          className="full-width-control"
+                          value={touchFilters.timeRange as never}
+                          onChange={(timeRange) => setTouchFilters((prev) => ({ ...prev, timeRange: timeRange as never }))}
+                        />
+                      </Col>
+                      <Col xs={24} md={12}>
+                        <Space wrap>
+                          <Button type="primary" onClick={() => setTouchFilters((prev) => ({ ...prev }))}>查询</Button>
+                          <Button onClick={() => setTouchFilters({ keyword: '', couponIds: [], channels: [], participationStatuses: [], writeoffStatuses: [], sourceTypes: [], timeRange: null })}>重置</Button>
+                          <Button type="primary" onClick={() => openTouchModal()}>发放优惠券</Button>
+                        </Space>
+                      </Col>
+                    </Row>
+                  </Card>
+                  <ResizableTable rowKey="id" loading={loading} columns={touchColumns} dataSource={filteredTouches} scroll={{ x: 1320 }} pagination={{ pageSize: 8 }} />
                 </>
               )
             },
@@ -769,20 +1011,28 @@ export default function MemberMarketing() {
               label: '复购分析',
               children: analysis ? (
                 <>
+                  <Space className="inventory-toolbar" wrap>
+                    <Typography.Text type="secondary">营销/复购趋势粒度</Typography.Text>
+                    <Segmented value={memberAnalysisPeriod} onChange={(value) => setMemberAnalysisPeriod(String(value))} options={[...periodOptions]} />
+                    <Typography.Text type="secondary">当前按“{periodOptions.find((item) => item.value === memberAnalysisPeriod)?.label || '日'}”口径预留趋势展示，等级与生命周期分布保持实时结构口径。</Typography.Text>
+                  </Space>
                   <Row gutter={[16, 16]}>
-                    <Col xs={24} lg={14}>
-                      <Card title="会员复购排行表">
-                        <Table rowKey="member_id" columns={rankColumns} dataSource={analysis.repurchase_ranking} pagination={false} />
+                    <Col xs={24} lg={8}>
+                      <Card title="会员等级分布图" style={{ marginBottom: 16 }}>
+                        <LevelChart chartId="member-level-chart" seriesName="会员等级" data={analysis.level_distribution || []} />
+                      </Card>
+                      <Card title="会员生命周期状态分布图" style={{ marginBottom: 16 }}>
+                        <LevelChart chartId="member-lifecycle-chart" seriesName="会员生命周期状态" data={analysis.lifecycle_distribution || []} />
                       </Card>
                     </Col>
-                    <Col xs={24} lg={10}>
-                      <Card title="会员等级分布图">
-                        <LevelChart data={analysis.level_distribution} />
+                    <Col xs={24} lg={16}>
+                      <Card title="会员复购排行表" style={{ marginBottom: 16 }}>
+                        <ResizableTable rowKey="member_id" columns={rankColumns} dataSource={analysis.repurchase_ranking} pagination={false} scroll={{ x: 980 }} />
                       </Card>
                     </Col>
                   </Row>
                   <Card title="营销效果分析表" className="inventory-section">
-                    <Table rowKey="name" columns={effectColumns} dataSource={analysis.marketing_effects} pagination={false} />
+                    <ResizableTable rowKey="name" columns={effectColumns} dataSource={analysis.marketing_effects} pagination={false} />
                   </Card>
                 </>
               ) : (
@@ -844,7 +1094,7 @@ export default function MemberMarketing() {
             新增门店
           </Button>
         </Space>
-        <Table
+        <ResizableTable
           rowKey="id"
           columns={storeColumns}
           dataSource={stores}

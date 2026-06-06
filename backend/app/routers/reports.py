@@ -27,7 +27,26 @@ def _rate(numerator: float, denominator: float) -> float:
 
 
 def _order_cost(order: models.SalesOrder) -> float:
-    return sum((item.sku.cost_price if item.sku else 0) * item.quantity for item in order.items)
+    return sum(_order_item_cost(item) for item in order.items)
+
+
+def _sku_cost_price(sku: models.SKU | None) -> float:
+    if not sku:
+        return 0
+    if sku.cost_price is not None and sku.cost_price > 0:
+        return float(sku.cost_price)
+    product = sku.product
+    if product and product.cost_price is not None and product.cost_price > 0:
+        return float(product.cost_price)
+    return 0
+
+
+def _order_item_cost(item: models.SalesOrderItem) -> float:
+    if item.cost_amount is not None and item.cost_amount > 0:
+        return float(item.cost_amount)
+    if item.unit_cost is not None and item.unit_cost > 0:
+        return float(item.unit_cost) * item.quantity
+    return _sku_cost_price(item.sku) * item.quantity
 
 
 def _payment_amount(order: models.SalesOrder | None) -> float:
@@ -257,7 +276,7 @@ def get_category_analysis(
             category = product.category if product else "未分类"
             row = category_map.setdefault(category, {"category": category, "sales_amount": 0.0, "cost_amount": 0.0, "sales_quantity": 0})
             row["sales_amount"] += float(item.subtotal or 0)
-            row["cost_amount"] += float((sku.cost_price if sku else 0) * item.quantity)
+            row["cost_amount"] += _order_item_cost(item)
             row["sales_quantity"] += item.quantity
     rows = []
     for row in category_map.values():
@@ -311,7 +330,7 @@ def get_product_ranking(
             )
             row["sales_quantity"] += item.quantity
             row["sales_amount"] += float(item.subtotal or 0)
-            row["cost_amount"] += float((sku.cost_price if sku else 0) * item.quantity)
+            row["cost_amount"] += _order_item_cost(item)
     rows = []
     for index, row in enumerate(sorted(product_map.values(), key=lambda item: item["sales_amount"], reverse=True), start=1):
         gross_profit = row["sales_amount"] - row["cost_amount"]

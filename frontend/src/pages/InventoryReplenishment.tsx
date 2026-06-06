@@ -13,12 +13,12 @@ import {
   Row,
   Select,
   Space,
-  Table,
   Tag,
   Typography
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import MetricCard from '../components/MetricCard';
+import ResizableTable from '../components/ResizableTable';
 import {
   approveReplenishment,
   createReplenishment,
@@ -35,7 +35,11 @@ import {
   type TransferRecord
 } from '../api/inventory';
 
-type InventoryStatus = InventoryItem['inventory_status'] | '全部';
+type InventoryStatus = InventoryItem['inventory_status'] | '待补货';
+
+function matchesMulti<T>(selected: T[], value: T) {
+  return !selected.length || selected.includes(value);
+}
 
 function getInventoryStatus(record: InventoryItem): InventoryItem['inventory_status'] {
   if (record.inventory_status) return record.inventory_status;
@@ -81,9 +85,11 @@ export default function InventoryReplenishment() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
-  const [storeFilter, setStoreFilter] = useState<number | '全部'>('全部');
-  const [categoryFilter, setCategoryFilter] = useState<string>('全部');
-  const [statusFilter, setStatusFilter] = useState<InventoryStatus>('全部');
+  const [storeFilter, setStoreFilter] = useState<number[]>([]);
+  const [categoryFilter, setCategoryFilter] = useState<string[]>([]);
+  const [statusFilter, setStatusFilter] = useState<InventoryStatus[]>([]);
+  const [replenishmentStatusFilter, setReplenishmentStatusFilter] = useState<string[]>([]);
+  const [transferStatusFilter, setTransferStatusFilter] = useState<string[]>([]);
   const [selectedInventory, setSelectedInventory] = useState<InventoryItem | null>(null);
   const [detailInventory, setDetailInventory] = useState<InventoryItem | null>(null);
   const [safetyStockInventory, setSafetyStockInventory] = useState<InventoryItem | null>(null);
@@ -146,12 +152,38 @@ export default function InventoryReplenishment() {
         const status = getInventoryStatus(item);
         const category = item.sku?.product?.category ?? '';
         return (
-          (storeFilter === '全部' || item.store_id === storeFilter) &&
-          (categoryFilter === '全部' || category === categoryFilter) &&
-          (statusFilter === '全部' || status === statusFilter)
+          matchesMulti(storeFilter, item.store_id) &&
+          matchesMulti(categoryFilter, category) &&
+          matchesMulti(statusFilter, status)
         );
       }),
     [categoryFilter, inventory, statusFilter, storeFilter]
+  );
+
+  const filteredReplenishments = useMemo(
+    () =>
+      replenishments.filter((item) => {
+        const category = item.sku?.product?.category ?? '';
+        return (
+          matchesMulti(storeFilter, item.store_id) &&
+          matchesMulti(categoryFilter, category) &&
+          matchesMulti(replenishmentStatusFilter, item.status)
+        );
+      }),
+    [categoryFilter, replenishmentStatusFilter, replenishments, storeFilter]
+  );
+
+  const filteredTransfers = useMemo(
+    () =>
+      transfers.filter((item) => {
+        const category = item.sku?.product?.category ?? '';
+        return (
+          matchesMulti(storeFilter, item.store_id) &&
+          matchesMulti(categoryFilter, category) &&
+          matchesMulti(transferStatusFilter, item.status)
+        );
+      }),
+    [categoryFilter, storeFilter, transferStatusFilter, transfers]
   );
 
   const metrics = useMemo(() => {
@@ -265,9 +297,11 @@ export default function InventoryReplenishment() {
   };
 
   const resetFilters = () => {
-    setStoreFilter('全部');
-    setCategoryFilter('全部');
-    setStatusFilter('全部');
+    setStoreFilter([]);
+    setCategoryFilter([]);
+    setStatusFilter([]);
+    setReplenishmentStatusFilter([]);
+    setTransferStatusFilter([]);
   };
 
   const exportInventory = () => {
@@ -425,21 +459,55 @@ export default function InventoryReplenishment() {
         <Space className="inventory-toolbar" wrap>
           <Select
             className="inventory-filter"
+            mode="multiple"
+            allowClear
+            showSearch
+            maxTagCount="responsive"
+            placeholder="门店"
             value={storeFilter}
-            options={[{ value: '全部', label: '全部门店' }, ...stores]}
+            options={stores}
             onChange={setStoreFilter}
           />
           <Select
             className="inventory-filter"
+            mode="multiple"
+            allowClear
+            showSearch
+            maxTagCount="responsive"
+            placeholder="商品分类"
             value={categoryFilter}
-            options={[{ value: '全部', label: '全部品类' }, ...categories]}
+            options={categories}
             onChange={setCategoryFilter}
           />
           <Select
             className="inventory-filter"
+            mode="multiple"
+            allowClear
+            maxTagCount="responsive"
+            placeholder="库存状态"
             value={statusFilter}
-            options={['全部', '正常', '低库存', '缺货预警', '待补货'].map((value) => ({ value, label: value }))}
+            options={['正常', '低库存', '缺货预警', '待补货'].map((value) => ({ value, label: value }))}
             onChange={setStatusFilter}
+          />
+          <Select
+            className="inventory-filter"
+            mode="multiple"
+            allowClear
+            maxTagCount="responsive"
+            placeholder="补货申请状态"
+            value={replenishmentStatusFilter}
+            options={['待审核', '已审核', '已通过', '已驳回', '待调拨', '已生成调拨', '在途', '已到货', '已完成'].map((value) => ({ value, label: value }))}
+            onChange={setReplenishmentStatusFilter}
+          />
+          <Select
+            className="inventory-filter"
+            mode="multiple"
+            allowClear
+            maxTagCount="responsive"
+            placeholder="调拨/到货状态"
+            value={transferStatusFilter}
+            options={['未发货', '在途', '已到货', '异常'].map((value) => ({ value, label: value }))}
+            onChange={setTransferStatusFilter}
           />
           <Button type="primary" onClick={loadData}>
             查询
@@ -450,7 +518,7 @@ export default function InventoryReplenishment() {
       </Card>
 
       <Card title="库存预警列表" className="inventory-section">
-        <Table
+        <ResizableTable
           rowKey="id"
           loading={loading}
           columns={inventoryColumns}
@@ -461,22 +529,22 @@ export default function InventoryReplenishment() {
       </Card>
 
       <Card title="补货申请审核区" className="inventory-section">
-        <Table
+        <ResizableTable
           rowKey="id"
           loading={loading}
           columns={replenishmentColumns}
-          dataSource={replenishments}
+          dataSource={filteredReplenishments}
           scroll={{ x: 1280 }}
           pagination={{ pageSize: 6 }}
         />
       </Card>
 
       <Card title="在途库存跟踪区" className="inventory-section">
-        <Table
+        <ResizableTable
           rowKey="id"
           loading={loading}
           columns={transferColumns}
-          dataSource={transfers}
+          dataSource={filteredTransfers}
           scroll={{ x: 1280 }}
           pagination={{ pageSize: 6 }}
         />
