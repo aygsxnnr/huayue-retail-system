@@ -1611,17 +1611,7 @@ export default function ProductPromotion() {
         <Form form={productForm} layout="vertical">
           <Row gutter={16}>
             <Col span={8}>
-              <Form.Item label="商品编码" name="code">
-                <Input placeholder="可留空，系统按品类自动生成" />
-              </Form.Item>
-            </Col>
-            <Col span={8}>
               <Form.Item label="商品名称" name="name" rules={[{ required: true, message: '请输入商品名称' }]}>
-                <Input />
-              </Form.Item>
-            </Col>
-            <Col span={8}>
-              <Form.Item label="品牌" name="brand" rules={[{ required: true, message: '请输入品牌' }]}>
                 <Input />
               </Form.Item>
             </Col>
@@ -1631,8 +1621,8 @@ export default function ProductPromotion() {
               </Form.Item>
             </Col>
             <Col span={8}>
-              <Form.Item label="季节" name="season" rules={[{ required: true, message: '请输入季节' }]}>
-                <Input />
+              <Form.Item label="商品状态" name="status" rules={[{ required: true, message: '请选择商品状态' }]}>
+                <Select options={productStatuses.map((value) => ({ value, label: value }))} />
               </Form.Item>
             </Col>
             <Col span={8}>
@@ -1640,24 +1630,34 @@ export default function ProductPromotion() {
                 <DatePicker className="full-width-control" />
               </Form.Item>
             </Col>
-            <Col span={12}>
-              <Form.Item label="商品状态" name="status" rules={[{ required: true, message: '请选择商品状态' }]}>
-                <Select options={productStatuses.map((value) => ({ value, label: value }))} />
+            <Col span={8}>
+              <Form.Item label="销售价" name="sale_price" rules={[{ type: 'number', min: 0, message: '销售价不能小于0' }]}>
+                <InputNumber min={0} precision={2} prefix="¥" className="full-width-control" />
               </Form.Item>
             </Col>
-            <Col span={12}>
-              <Form.Item label="生命周期状态" name="lifecycle_status" rules={[{ required: true, message: '请选择生命周期' }]}>
-                <Select options={lifecycleStatuses.map((value) => ({ value, label: value }))} />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
+            <Col span={8}>
               <Form.Item label="成本价" name="cost_price" rules={[{ type: 'number', min: 0, message: '成本价不能小于0' }]}>
                 <InputNumber min={0} precision={2} prefix="¥" className="full-width-control" />
               </Form.Item>
             </Col>
-            <Col span={12}>
-              <Form.Item label="销售价" name="sale_price" rules={[{ type: 'number', min: 0, message: '销售价不能小于0' }]}>
-                <InputNumber min={0} precision={2} prefix="¥" className="full-width-control" />
+            <Col span={8}>
+              <Form.Item label="商品编码" name="code">
+                <Input placeholder="可留空，系统按品类自动生成" />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item label="品牌" name="brand" rules={[{ required: true, message: '请输入品牌' }]}>
+                <Input />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item label="季节" name="season" rules={[{ required: true, message: '请输入季节' }]}>
+                <Input />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item label="生命周期状态" name="lifecycle_status" rules={[{ required: true, message: '请选择生命周期' }]}>
+                <Select options={lifecycleStatuses.map((value) => ({ value, label: value }))} />
               </Form.Item>
             </Col>
           </Row>
