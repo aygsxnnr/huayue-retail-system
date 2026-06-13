@@ -42,3 +42,10 @@ env/
 .vscode/
 .DS_Store
 Thumbs.db
+backend/huayue.db
+backend/huayue.db-shm
+backend/huayue.db-wal
+backend/.venv/
+frontend/node_modules/
+frontend/dist/
+frontend/tsconfig.tsbuildinfo
