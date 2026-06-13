@@ -46,6 +46,7 @@ class Product(Base):
         prices = [sku.list_price for sku in self.skus]
         return min(prices) if prices else 0
 
+
 class SKU(Base):
     __tablename__ = "skus"
 
@@ -356,3 +357,43 @@ class FinanceRecord(Base):
 
     order = relationship("SalesOrder", back_populates="finance_record")
     store = relationship("Store")
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    username: Mapped[str] = mapped_column(String(50), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    real_name: Mapped[str] = mapped_column(String(50))
+    role: Mapped[str] = mapped_column(String(30), index=True)
+    store_id: Mapped[int | None] = mapped_column(ForeignKey("stores.id"), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="启用")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+
+    store = relationship("Store")
+    operation_logs = relationship("OperationLog", back_populates="operator")
+
+
+class OperationLog(Base):
+    __tablename__ = "operation_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    operator_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    operator_name: Mapped[str] = mapped_column(String(50), default="系统")
+    role: Mapped[str] = mapped_column(String(30), default="")
+    module: Mapped[str] = mapped_column(String(50), index=True)
+    action: Mapped[str] = mapped_column(String(100))
+    target_type: Mapped[str] = mapped_column(String(50), default="")
+    target_id: Mapped[str] = mapped_column(String(50), default="")
+    before_data: Mapped[str] = mapped_column(Text, default="")
+    after_data: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    remark: Mapped[str] = mapped_column(Text, default="")
+
+    operator = relationship("User", back_populates="operation_logs")

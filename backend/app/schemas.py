@@ -822,3 +822,72 @@ class DashboardOut(BaseModel):
     summary: DashboardSummary
     category_sales: list[CategorySales]
     low_stock_items: list[InventoryOut]
+
+
+class UserBase(BaseModel):
+    username: str
+    real_name: str
+    role: str
+    store_id: int | None = None
+    status: str = "启用"
+
+
+class UserCreate(UserBase):
+    password: str = "123456"
+
+
+class UserUpdate(BaseModel):
+    real_name: str | None = None
+    role: str | None = None
+    store_id: int | None = None
+    status: str | None = None
+    password: str | None = None
+
+
+class UserStatusUpdate(BaseModel):
+    status: str
+
+
+class UserOut(UserBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    token: str
+    user: UserOut
+
+
+class CurrentUserResponse(BaseModel):
+    user: UserOut
+
+
+class RoleOut(BaseModel):
+    label: str
+    value: str
+    menus: list[str] = []
+
+
+class OperationLogOut(BaseModel):
+    id: int
+    operator_id: int | None = None
+    operator_name: str
+    role: str
+    module: str
+    action: str
+    target_type: str
+    target_id: str
+    before_data: str
+    after_data: str
+    created_at: datetime
+    remark: str
+
+    model_config = ConfigDict(from_attributes=True)

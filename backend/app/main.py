@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .database import Base, engine, ensure_coupon_schema, ensure_member_schema, ensure_product_schema, ensure_sales_order_item_schema
-from .routers import coupons, dashboard, finance, inventory, members, products, promotions, reports, sales, stores
+from .routers import coupons, dashboard, finance, inventory, members, products, promotions, reports, sales, stores, auth, users, operation_logs
 
 Base.metadata.create_all(bind=engine)
 ensure_member_schema()
@@ -34,6 +34,10 @@ app.include_router(stores.router, prefix="/api")
 app.include_router(finance.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(reports.router, prefix="/api")
+app.include_router(auth.router)
+app.include_router(users.router)
+app.include_router(operation_logs.router)
+
 
 
 @app.get("/", tags=["系统"])

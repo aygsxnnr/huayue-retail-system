@@ -1,7 +1,7 @@
 from collections.abc import Generator
 from pathlib import Path
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.engine import URL
 from sqlalchemy.exc import OperationalError
 from sqlalchemy import text
@@ -15,8 +15,24 @@ SQLALCHEMY_DATABASE_URL = URL.create("sqlite", database=str(DB_PATH))
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
-    connect_args={"check_same_thread": False},
+    connect_args={
+        "check_same_thread": False,
+        "timeout": 60,
+    },
+    pool_size=30,
+    max_overflow=30,
+    pool_timeout=60,
+    pool_pre_ping=True,
 )
+
+@event.listens_for(engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=60000")
+    cursor.close()
+
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
