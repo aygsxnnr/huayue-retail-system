@@ -176,3 +176,32 @@ huayue-retail-system/
     ├── data-dictionary.md
     ├── database-design.md
     └── ui-design.md
+
+## 认证测试账号初始化
+
+如果是全新数据库，或执行过大规模数据重建命令，例如：
+
+```bash
+python -m app.seed_large --reset true
+```
+
+请在后端目录下重新生成认证测试账号：
+
+```bash
+cd backend
+python -m app.seed_auth
+```
+
+默认测试账号：
+
+| 用户名       | 密码     | 角色    |
+| --------- | ------ | ----- |
+| admin     | 123456 | 系统管理员 |
+| manager   | 123456 | 总经理   |
+| cashier   | 123456 | 收银员   |
+| stock     | 123456 | 库存管理员 |
+| marketing | 123456 | 营销专员  |
+| finance   | 123456 | 财务人员  |
+
+说明：`seed_auth` 用于幂等创建或修复默认登录账号，不负责生成业务运营数据。如果当前数据库中已经存在这些账号，可以不重复执行；如果执行过数据库 reset 或大规模 seed 重建，建议重新执行一次。
+

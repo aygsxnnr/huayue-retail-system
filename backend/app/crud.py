@@ -965,7 +965,7 @@ def get_member_profile(db: Session, member_id: int) -> dict:
 
 def list_member_rfm(db: Session) -> list[dict]:
     _sync_member_metrics(db)
-    #_recalculate_member_tags(db, commit=True)
+    _recalculate_member_tags(db, commit=True)
     members = (
         db.query(models.Member)
         .options(joinedload(models.Member.tag_profile))
@@ -1156,7 +1156,6 @@ def repurchase_analysis(db: Session) -> dict:
 
 
 def _sync_member_metrics(db: Session) -> None:
-    return
     members = db.query(models.Member).all()
     for member in members:
         metrics = (
